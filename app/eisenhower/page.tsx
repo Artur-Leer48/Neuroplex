@@ -222,6 +222,10 @@ export default function EisenhowerPage() {
     );
   }
 
+  function clearDoneTodos() {
+    updateTodos(todos.filter((todo) => !todo.isDone));
+  }
+
   function dismissInfo() {
     window.localStorage.setItem(INFO_STORAGE_KEY, "true");
     setShowInfo(false);
@@ -473,9 +477,21 @@ export default function EisenhowerPage() {
         </div>
 
         <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-            Erledigt
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Erledigt
+            </p>
+
+            {doneTodos.length > 0 && (
+              <button
+                type="button"
+                onClick={clearDoneTodos}
+                className="flex h-9 items-center justify-center rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+              >
+                Clear
+              </button>
+            )}
+          </div>
 
           {doneTodos.length === 0 ? (
             <p className="mt-4 text-sm text-zinc-500">
