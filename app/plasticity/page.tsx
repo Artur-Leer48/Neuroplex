@@ -17,6 +17,8 @@ const TIMER_OPTIONS = [30, 45, 60, 75, 90];
 const MAX_DURATION_SECONDS = 2 * 60 * 60;
 const DOUBLE_SPACE_DELAY_MS = 350;
 const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
+const ACTIVE_FOCUS_PREP_STORAGE_KEY = "neuroplex:active-focus-prep";
+const FOCUS_PREP_SETTINGS_STORAGE_KEY = "neuroplex:focus-prep-settings";
 const PRAISE_MESSAGES = [
   "Sehr gut gemacht! Du hast deinem Gehirn gerade Zeit gegeben, das Gelernte zu sortieren.",
   "Stark abgeschlossen. Genau solche Pausen machen Training wirksam.",
@@ -93,12 +95,22 @@ type ActiveTimerSession =
       taskTitle?: string | null;
     };
 
+type ActiveFocusPrepSession = {
+  durationSeconds: number;
+  sessionDurationSeconds: number;
+  endAt: number;
+  timerName: string;
+  taskId: string | null;
+  taskTitle: string | null;
+};
+
 export default function PlasticityPage() {
   const router = useRouter();
   const spacePressTimerRef = useRef<number | null>(null);
   const lastSpacePressRef = useRef(0);
   const plasticityEndAtRef = useRef<number | null>(null);
   const recoveryEndAtRef = useRef<number | null>(null);
+  const focusPrepEndAtRef = useRef<number | null>(null);
   const activeTaskRef = useRef<{
     id: string | null;
     title: string | null;
@@ -107,6 +119,11 @@ export default function PlasticityPage() {
   const [phase, setPhase] = useState<Phase>("plasticity");
   const [durationSeconds, setDurationSeconds] = useState(30 * 60);
   const [remainingSeconds, setRemainingSeconds] = useState(30 * 60);
+  const [isFocusPrepActive, setIsFocusPrepActive] = useState(false);
+  const [focusPrepDurationSeconds, setFocusPrepDurationSeconds] = useState(30);
+  const [focusPrepInputSeconds, setFocusPrepInputSeconds] = useState("30");
+  const [focusPrepRemainingSeconds, setFocusPrepRemainingSeconds] =
+    useState(30);
   const [timerName, setTimerName] = useState("Plasticity");
   const [mainView, setMainView] = useState<"timer" | "eisenhower">("timer");
   const [eisenhowerTodos, setEisenhowerTodos] = useState<EisenhowerTodo[]>([]);
@@ -152,10 +169,13 @@ export default function PlasticityPage() {
 
   const resetFlow = useCallback((nextMessage?: string) => {
     clearActiveTimerSession();
+    clearActiveFocusPrepSession();
     plasticityEndAtRef.current = null;
     recoveryEndAtRef.current = null;
+    focusPrepEndAtRef.current = null;
     setPhase("plasticity");
     setSelectedActivity(null);
+    setIsFocusPrepActive(false);
     setIsRunning(false);
     setIsRecoveryRunning(false);
     setRemainingSeconds(durationSeconds);
@@ -209,6 +229,52 @@ export default function PlasticityPage() {
     [timerName],
   );
 
+  const startFocusPrep = useCallback(
+    (sessionDurationSeconds: number, name = timerName) => {
+      const nextPrepDurationSeconds = Math.max(1, focusPrepDurationSeconds);
+      const nextTask = activeTaskRef.current;
+      const endAt = Date.now() + nextPrepDurationSeconds * 1000;
+      focusPrepEndAtRef.current = endAt;
+      setFocusPrepRemainingSeconds(nextPrepDurationSeconds);
+      setIsFocusPrepActive(true);
+      setIsRunning(false);
+      saveActiveFocusPrepSession({
+        durationSeconds: nextPrepDurationSeconds,
+        sessionDurationSeconds,
+        endAt,
+        timerName: name.trim() || "Plasticity",
+        taskId: nextTask?.id ?? null,
+        taskTitle: nextTask?.title ?? null,
+      });
+    },
+    [focusPrepDurationSeconds, timerName],
+  );
+
+  const completeFocusPrep = useCallback(
+    (prepSession?: ActiveFocusPrepSession | null) => {
+      const sessionDurationSeconds =
+        prepSession?.sessionDurationSeconds ?? durationSeconds;
+      const nextTimerName = prepSession?.timerName ?? timerName;
+      const nextTask = prepSession
+        ? {
+            id: prepSession.taskId,
+            title: prepSession.taskTitle,
+          }
+        : activeTaskRef.current;
+
+      activeTaskRef.current = nextTask;
+      clearActiveFocusPrepSession();
+      focusPrepEndAtRef.current = null;
+      setIsFocusPrepActive(false);
+      setDurationSeconds(sessionDurationSeconds);
+      setRemainingSeconds(sessionDurationSeconds);
+      setTimerName(nextTimerName);
+      startPlasticityTimer(sessionDurationSeconds, nextTimerName, nextTask);
+      setIsRunning(true);
+    },
+    [durationSeconds, startPlasticityTimer, timerName],
+  );
+
   useEffect(() => {
     let isMounted = true;
 
@@ -225,6 +291,9 @@ export default function PlasticityPage() {
       }
 
       setEisenhowerTodos(readEisenhowerTodos());
+      const savedFocusPrepSeconds = readFocusPrepDurationSeconds();
+      setFocusPrepDurationSeconds(savedFocusPrepSeconds);
+      setFocusPrepInputSeconds(String(savedFocusPrepSeconds));
       setIsLoading(false);
       const pendingFocusSession = consumePendingFocusSession();
 
@@ -236,17 +305,39 @@ export default function PlasticityPage() {
         };
         setDurationSeconds(pendingFocusSession.seconds);
         setRemainingSeconds(pendingFocusSession.seconds);
-        startPlasticityTimer(
+        startFocusPrep(
           pendingFocusSession.seconds,
           pendingFocusSession.taskTitle,
-          {
-            id: pendingFocusSession.taskId,
-            title: pendingFocusSession.taskTitle,
-          },
         );
-        setIsRunning(true);
         setMessage(`Fokus gestartet: ${pendingFocusSession.taskTitle}`);
         setMessageTone("praise");
+        return;
+      }
+
+      const activeFocusPrepSession = readActiveFocusPrepSession();
+
+      if (activeFocusPrepSession) {
+        const nextPrepRemainingSeconds = getRemainingSeconds(
+          activeFocusPrepSession.endAt,
+        );
+        activeTaskRef.current = {
+          id: activeFocusPrepSession.taskId,
+          title: activeFocusPrepSession.taskTitle,
+        };
+        setDurationSeconds(activeFocusPrepSession.sessionDurationSeconds);
+        setRemainingSeconds(activeFocusPrepSession.sessionDurationSeconds);
+        setTimerName(activeFocusPrepSession.timerName);
+
+        if (nextPrepRemainingSeconds > 0) {
+          focusPrepEndAtRef.current = activeFocusPrepSession.endAt;
+          setFocusPrepDurationSeconds(activeFocusPrepSession.durationSeconds);
+          setFocusPrepInputSeconds(String(activeFocusPrepSession.durationSeconds));
+          setFocusPrepRemainingSeconds(nextPrepRemainingSeconds);
+          setIsFocusPrepActive(true);
+          return;
+        }
+
+        completeFocusPrep(activeFocusPrepSession);
         return;
       }
 
@@ -328,7 +419,7 @@ export default function PlasticityPage() {
     return () => {
       isMounted = false;
     };
-  }, [beginRecovery, resetFlow, router, startPlasticityTimer]);
+  }, [beginRecovery, completeFocusPrep, resetFlow, router, startFocusPrep]);
 
   useEffect(() => {
     if (!isRunning) {
