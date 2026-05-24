@@ -44,7 +44,7 @@ export default function PersonalPage() {
         return;
       }
 
-      const nextEntries = readPlasticityStats();
+      const nextEntries = await readPlasticityStats(supabaseBrowser);
       setEntries(nextEntries);
       setSummary(summarizePlasticityStats(nextEntries));
       setTaskSummaries(summarizeTaskTime(nextEntries));

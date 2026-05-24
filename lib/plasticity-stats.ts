@@ -1,6 +1,6 @@
 "use client";
 
-const STORAGE_KEY = "neuroplex:plasticity-stats";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type PlasticityStatType =
   | "plasticity"
@@ -33,7 +33,25 @@ export type TaskTimeSummary = {
   seconds: number;
 };
 
-export function recordPlasticityStat(
+type WorkSessionRow = {
+  id: string;
+  task_id: string | null;
+  task_title: string | null;
+  timer_name: string;
+  duration_seconds: number;
+  completed_at: string;
+};
+
+type RecoverySessionRow = {
+  id: string;
+  activity_type: "meditation" | "yoga-nidra" | "walk";
+  timer_name: string;
+  duration_seconds: number;
+  completed_at: string;
+};
+
+export async function recordPlasticityStat(
+  supabase: SupabaseClient,
   type: PlasticityStatType,
   seconds: number,
   task?: {
@@ -41,24 +59,32 @@ export function recordPlasticityStat(
     title?: string | null;
   },
 ) {
-  if (typeof window === "undefined") {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+
+  if (userError || !userData.user) {
     return;
   }
 
-  const entries = readPlasticityStats();
-  const nextEntry: PlasticityStatEntry = {
-    id: crypto.randomUUID(),
-    type,
-    seconds,
-    createdAt: new Date().toISOString(),
-    taskId: task?.id ?? null,
-    taskTitle: task?.title ?? null,
-  };
+  if (type === "plasticity") {
+    await supabase.from("work_sessions").insert({
+      user_id: userData.user.id,
+      task_id: task?.id ?? null,
+      task_title: task?.title ?? null,
+      timer_name: task?.title ?? "Plasticity",
+      duration_seconds: seconds,
+      started_at: new Date(Date.now() - seconds * 1000).toISOString(),
+      completed_at: new Date().toISOString(),
+    });
+    return;
+  }
 
-  window.localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify([nextEntry, ...entries]),
-  );
+  await supabase.from("recovery_sessions").insert({
+    user_id: userData.user.id,
+    activity_type: type,
+    timer_name: formatType(type),
+    duration_seconds: seconds,
+    completed_at: new Date().toISOString(),
+  });
 }
 
 export function summarizeTaskTime(entries: PlasticityStatEntry[]) {
@@ -89,28 +115,38 @@ export function summarizeTaskTime(entries: PlasticityStatEntry[]) {
   );
 }
 
-export function readPlasticityStats() {
-  if (typeof window === "undefined") {
-    return [];
+export async function readPlasticityStats(supabase: SupabaseClient) {
+  const [workSessionsResult, recoverySessionsResult] = await Promise.all([
+    supabase
+      .from("work_sessions")
+      .select("id,task_id,task_title,timer_name,duration_seconds,completed_at")
+      .order("completed_at", { ascending: false }),
+    supabase
+      .from("recovery_sessions")
+      .select("id,activity_type,timer_name,duration_seconds,completed_at")
+      .order("completed_at", { ascending: false }),
+  ]);
+
+  if (workSessionsResult.error) {
+    throw new Error(workSessionsResult.error.message);
   }
 
-  const rawStats = window.localStorage.getItem(STORAGE_KEY);
-
-  if (!rawStats) {
-    return [];
+  if (recoverySessionsResult.error) {
+    throw new Error(recoverySessionsResult.error.message);
   }
 
-  try {
-    const parsedStats = JSON.parse(rawStats);
-
-    if (!Array.isArray(parsedStats)) {
-      return [];
-    }
-
-    return parsedStats.filter(isPlasticityStatEntry);
-  } catch {
-    return [];
-  }
+  return [
+    ...((workSessionsResult.data ?? []) as WorkSessionRow[]).map(
+      mapWorkSession,
+    ),
+    ...((recoverySessionsResult.data ?? []) as RecoverySessionRow[]).map(
+      mapRecoverySession,
+    ),
+  ].sort(
+    (firstEntry, secondEntry) =>
+      new Date(secondEntry.createdAt).getTime() -
+      new Date(firstEntry.createdAt).getTime(),
+  );
 }
 
 export function summarizePlasticityStats(
@@ -170,22 +206,40 @@ export function summarizePlasticityStats(
   );
 }
 
-function isPlasticityStatEntry(value: unknown): value is PlasticityStatEntry {
-  if (!value || typeof value !== "object") {
-    return false;
+function mapWorkSession(row: WorkSessionRow): PlasticityStatEntry {
+  return {
+    id: row.id,
+    type: "plasticity",
+    seconds: row.duration_seconds,
+    createdAt: row.completed_at,
+    taskId: row.task_id,
+    taskTitle: row.task_title ?? row.timer_name,
+  };
+}
+
+function mapRecoverySession(row: RecoverySessionRow): PlasticityStatEntry {
+  return {
+    id: row.id,
+    type: row.activity_type,
+    seconds: row.duration_seconds,
+    createdAt: row.completed_at,
+  };
+}
+
+function formatType(type: PlasticityStatType) {
+  if (type === "yoga-nidra") {
+    return "Yoga Nidra";
   }
 
-  const entry = value as Partial<PlasticityStatEntry>;
+  if (type === "walk") {
+    return "Spaziergang";
+  }
 
-  return (
-    typeof entry.id === "string" &&
-    typeof entry.createdAt === "string" &&
-    typeof entry.seconds === "number" &&
-    (entry.type === "plasticity" ||
-      entry.type === "meditation" ||
-      entry.type === "yoga-nidra" ||
-      entry.type === "walk")
-  );
+  if (type === "meditation") {
+    return "Meditation";
+  }
+
+  return "Plasticity";
 }
 
 function startOfDay(date: Date) {

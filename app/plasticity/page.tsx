@@ -274,7 +274,8 @@ export default function PlasticityPage() {
         }
 
         clearActiveTimerSession();
-        recordPlasticityStat(
+        await recordPlasticityStat(
+          supabaseBrowser,
           "plasticity",
           activeTimerSession.durationSeconds,
           {
@@ -314,7 +315,8 @@ export default function PlasticityPage() {
       }
 
       clearActiveTimerSession();
-      recordPlasticityStat(
+      await recordPlasticityStat(
+        supabaseBrowser,
         restoredActivity.id,
         activeTimerSession.durationSeconds,
       );
@@ -345,7 +347,12 @@ export default function PlasticityPage() {
       setIsRunning(false);
       clearActiveTimerSession();
       plasticityEndAtRef.current = null;
-      recordPlasticityStat("plasticity", durationSeconds, activeTaskRef.current ?? undefined);
+      void recordPlasticityStat(
+        supabaseBrowser,
+        "plasticity",
+        durationSeconds,
+        activeTaskRef.current ?? undefined,
+      );
       beginRecovery();
     }, 1000);
 
@@ -370,7 +377,11 @@ export default function PlasticityPage() {
       clearActiveTimerSession();
       recoveryEndAtRef.current = null;
       if (selectedActivity) {
-        recordPlasticityStat(selectedActivity.id, recoveryDurationSeconds);
+        void recordPlasticityStat(
+          supabaseBrowser,
+          selectedActivity.id,
+          recoveryDurationSeconds,
+        );
       }
       resetFlow(getRandomPraise());
     }, 1000);
