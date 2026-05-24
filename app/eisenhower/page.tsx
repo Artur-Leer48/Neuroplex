@@ -294,14 +294,25 @@ export default function EisenhowerPage() {
             </h1>
           </div>
 
-          <Link
-            href="/dashboard"
-            aria-label="Home"
-            title="Home"
-            className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-          >
-            <HomeIcon />
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/dashboard"
+              aria-label="Home"
+              title="Home"
+              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+            >
+              <HomeIcon />
+            </Link>
+
+            <Link
+              href="/personal"
+              aria-label="Persoenlicher Bereich"
+              title="Persoenlicher Bereich"
+              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+            >
+              <UserIcon />
+            </Link>
+          </div>
         </header>
 
         <form
@@ -781,6 +792,24 @@ function HomeIcon() {
       <path d="m3 10 9-7 9 7" />
       <path d="M5 10v10h14V10" />
       <path d="M9 20v-6h6v6" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <path d="M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
     </svg>
   );
 }

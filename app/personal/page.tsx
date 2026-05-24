@@ -7,8 +7,10 @@ import { useEffect, useState } from "react";
 import {
   readPlasticityStats,
   summarizePlasticityStats,
+  summarizeTaskTime,
   type PlasticityStatEntry,
   type PlasticityStatSummary,
+  type TaskTimeSummary,
 } from "@/lib/plasticity-stats";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 
@@ -16,6 +18,7 @@ export default function PersonalPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [entries, setEntries] = useState<PlasticityStatEntry[]>([]);
+  const [taskSummaries, setTaskSummaries] = useState<TaskTimeSummary[]>([]);
   const [summary, setSummary] = useState<PlasticityStatSummary>({
     today: 0,
     week: 0,
@@ -44,6 +47,7 @@ export default function PersonalPage() {
       const nextEntries = readPlasticityStats();
       setEntries(nextEntries);
       setSummary(summarizePlasticityStats(nextEntries));
+      setTaskSummaries(summarizeTaskTime(nextEntries));
       setIsLoading(false);
     }
 
@@ -95,6 +99,15 @@ export default function PersonalPage() {
             >
               <TimerIcon />
             </Link>
+
+            <Link
+              href="/personal"
+              aria-label="Persoenlicher Bereich"
+              title="Persoenlicher Bereich"
+              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-950 bg-zinc-950 text-white transition hover:bg-zinc-800"
+            >
+              <UserIcon />
+            </Link>
           </div>
         </header>
 
@@ -121,6 +134,34 @@ export default function PersonalPage() {
             <StatCard label="Yoga Nidra" seconds={summary.yogaNidra} />
             <StatCard label="Spaziergang" seconds={summary.walk} />
           </div>
+        </div>
+
+        <div className="mt-6 rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            Task-Zeit
+          </p>
+
+          {taskSummaries.length === 0 ? (
+            <p className="mt-4 text-sm text-zinc-600">
+              Noch keine Task-Zeit erfasst.
+            </p>
+          ) : (
+            <div className="mt-4 divide-y divide-zinc-100">
+              {taskSummaries.map((taskSummary) => (
+                <div
+                  key={taskSummary.taskId ?? taskSummary.taskTitle}
+                  className="flex items-center justify-between gap-4 py-3 text-sm"
+                >
+                  <span className="font-medium text-zinc-800">
+                    {taskSummary.taskTitle}
+                  </span>
+                  <span className="text-zinc-500">
+                    {formatMinutes(taskSummary.seconds)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="mt-6 rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
@@ -226,6 +267,24 @@ function TimerIcon() {
       <path d="M10 2h4" />
       <path d="M12 14V8" />
       <path d="M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <path d="M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
     </svg>
   );
 }

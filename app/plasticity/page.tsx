@@ -80,6 +80,8 @@ type ActiveTimerSession =
       durationSeconds: number;
       endAt: number;
       timerName?: string;
+      taskId?: string | null;
+      taskTitle?: string | null;
     }
   | {
       phase: "recovery";
@@ -87,6 +89,8 @@ type ActiveTimerSession =
       durationSeconds: number;
       endAt: number;
       timerName?: string;
+      taskId?: string | null;
+      taskTitle?: string | null;
     };
 
 export default function PlasticityPage() {
@@ -95,6 +99,10 @@ export default function PlasticityPage() {
   const lastSpacePressRef = useRef(0);
   const plasticityEndAtRef = useRef<number | null>(null);
   const recoveryEndAtRef = useRef<number | null>(null);
+  const activeTaskRef = useRef<{
+    id: string | null;
+    title: string | null;
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [phase, setPhase] = useState<Phase>("plasticity");
   const [durationSeconds, setDurationSeconds] = useState(30 * 60);
@@ -178,14 +186,24 @@ export default function PlasticityPage() {
   }, [allowedActivityOptions]);
 
   const startPlasticityTimer = useCallback(
-    (secondsToRun: number, name = timerName) => {
+    (
+      secondsToRun: number,
+      name = timerName,
+      task?: {
+        id: string | null;
+        title: string | null;
+      },
+    ) => {
       const endAt = Date.now() + secondsToRun * 1000;
+      const nextTask = task ?? activeTaskRef.current;
       plasticityEndAtRef.current = endAt;
       saveActiveTimerSession({
         phase: "plasticity",
         durationSeconds: secondsToRun,
         endAt,
         timerName: name.trim() || "Plasticity",
+        taskId: nextTask?.id ?? null,
+        taskTitle: nextTask?.title ?? null,
       });
     },
     [timerName],
@@ -212,11 +230,19 @@ export default function PlasticityPage() {
 
       if (pendingFocusSession) {
         setTimerName(pendingFocusSession.taskTitle);
+        activeTaskRef.current = {
+          id: pendingFocusSession.taskId,
+          title: pendingFocusSession.taskTitle,
+        };
         setDurationSeconds(pendingFocusSession.seconds);
         setRemainingSeconds(pendingFocusSession.seconds);
         startPlasticityTimer(
           pendingFocusSession.seconds,
           pendingFocusSession.taskTitle,
+          {
+            id: pendingFocusSession.taskId,
+            title: pendingFocusSession.taskTitle,
+          },
         );
         setIsRunning(true);
         setMessage(`Fokus gestartet: ${pendingFocusSession.taskTitle}`);
@@ -235,6 +261,10 @@ export default function PlasticityPage() {
       if (activeTimerSession.phase === "plasticity") {
         setDurationSeconds(activeTimerSession.durationSeconds);
         setTimerName(activeTimerSession.timerName ?? "Plasticity");
+        activeTaskRef.current = {
+          id: activeTimerSession.taskId ?? null,
+          title: activeTimerSession.taskTitle ?? null,
+        };
 
         if (nextRemainingSeconds > 0) {
           plasticityEndAtRef.current = activeTimerSession.endAt;
@@ -244,7 +274,14 @@ export default function PlasticityPage() {
         }
 
         clearActiveTimerSession();
-        recordPlasticityStat("plasticity", activeTimerSession.durationSeconds);
+        recordPlasticityStat(
+          "plasticity",
+          activeTimerSession.durationSeconds,
+          {
+            id: activeTimerSession.taskId ?? null,
+            title: activeTimerSession.taskTitle ?? null,
+          },
+        );
         setRemainingSeconds(0);
         beginRecovery();
         return;
@@ -264,6 +301,10 @@ export default function PlasticityPage() {
       setSelectedActivity(restoredActivity);
       setRecoveryDurationSeconds(activeTimerSession.durationSeconds);
       setTimerName(activeTimerSession.timerName ?? "Plasticity");
+      activeTaskRef.current = {
+        id: activeTimerSession.taskId ?? null,
+        title: activeTimerSession.taskTitle ?? null,
+      };
 
       if (nextRemainingSeconds > 0) {
         recoveryEndAtRef.current = activeTimerSession.endAt;
@@ -273,7 +314,10 @@ export default function PlasticityPage() {
       }
 
       clearActiveTimerSession();
-      recordPlasticityStat(restoredActivity.id, activeTimerSession.durationSeconds);
+      recordPlasticityStat(
+        restoredActivity.id,
+        activeTimerSession.durationSeconds,
+      );
       resetFlow(getRandomPraise());
     }
 
@@ -301,7 +345,7 @@ export default function PlasticityPage() {
       setIsRunning(false);
       clearActiveTimerSession();
       plasticityEndAtRef.current = null;
-      recordPlasticityStat("plasticity", durationSeconds);
+      recordPlasticityStat("plasticity", durationSeconds, activeTaskRef.current ?? undefined);
       beginRecovery();
     }, 1000);
 
@@ -348,6 +392,8 @@ export default function PlasticityPage() {
         durationSeconds: recoveryDurationSeconds,
         endAt,
         timerName,
+        taskId: activeTaskRef.current?.id ?? null,
+        taskTitle: activeTaskRef.current?.title ?? null,
       });
     }
   }, [

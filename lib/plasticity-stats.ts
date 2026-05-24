@@ -13,6 +13,8 @@ export type PlasticityStatEntry = {
   type: PlasticityStatType;
   seconds: number;
   createdAt: string;
+  taskId?: string | null;
+  taskTitle?: string | null;
 };
 
 export type PlasticityStatSummary = {
@@ -25,7 +27,20 @@ export type PlasticityStatSummary = {
   walk: number;
 };
 
-export function recordPlasticityStat(type: PlasticityStatType, seconds: number) {
+export type TaskTimeSummary = {
+  taskId: string | null;
+  taskTitle: string;
+  seconds: number;
+};
+
+export function recordPlasticityStat(
+  type: PlasticityStatType,
+  seconds: number,
+  task?: {
+    id?: string | null;
+    title?: string | null;
+  },
+) {
   if (typeof window === "undefined") {
     return;
   }
@@ -36,11 +51,41 @@ export function recordPlasticityStat(type: PlasticityStatType, seconds: number) 
     type,
     seconds,
     createdAt: new Date().toISOString(),
+    taskId: task?.id ?? null,
+    taskTitle: task?.title ?? null,
   };
 
   window.localStorage.setItem(
     STORAGE_KEY,
     JSON.stringify([nextEntry, ...entries]),
+  );
+}
+
+export function summarizeTaskTime(entries: PlasticityStatEntry[]) {
+  const taskMap = new Map<string, TaskTimeSummary>();
+
+  for (const entry of entries) {
+    if (entry.type !== "plasticity" || !entry.taskTitle) {
+      continue;
+    }
+
+    const taskKey = entry.taskId ?? entry.taskTitle;
+    const existingSummary = taskMap.get(taskKey);
+
+    if (existingSummary) {
+      existingSummary.seconds += entry.seconds;
+      continue;
+    }
+
+    taskMap.set(taskKey, {
+      taskId: entry.taskId ?? null,
+      taskTitle: entry.taskTitle,
+      seconds: entry.seconds,
+    });
+  }
+
+  return Array.from(taskMap.values()).sort(
+    (firstTask, secondTask) => secondTask.seconds - firstTask.seconds,
   );
 }
 
