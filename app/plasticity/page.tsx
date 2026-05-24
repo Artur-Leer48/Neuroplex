@@ -1,0 +1,1232 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  readEisenhowerTodos,
+  type EisenhowerQuadrant,
+  type EisenhowerTodo,
+} from "@/lib/eisenhower-todos";
+import { consumePendingFocusSession } from "@/lib/focus-session";
+import { supabaseBrowser } from "@/lib/supabase-browser";
+import { recordPlasticityStat } from "@/lib/plasticity-stats";
+
+const TIMER_OPTIONS = [30, 45, 60, 75, 90];
+const MAX_DURATION_SECONDS = 2 * 60 * 60;
+const DOUBLE_SPACE_DELAY_MS = 350;
+const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
+const PRAISE_MESSAGES = [
+  "Sehr gut gemacht! Du hast deinem Gehirn gerade Zeit gegeben, das Gelernte zu sortieren.",
+  "Stark abgeschlossen. Genau solche Pausen machen Training wirksam.",
+  "Gut gemacht. Dein Nervensystem hatte gerade Raum fuer Erholung.",
+  "Schoen drangeblieben. Das war ein sauberer Plasticity-Durchlauf.",
+];
+
+const MINI_QUADRANTS: Array<{
+  id: EisenhowerQuadrant;
+  title: string;
+}> = [
+  {
+    id: "urgent-important",
+    title: "Dringend & wichtig",
+  },
+  {
+    id: "not-urgent-important",
+    title: "Nicht dringend & wichtig",
+  },
+  {
+    id: "urgent-not-important",
+    title: "Dringend & unwichtig",
+  },
+  {
+    id: "not-urgent-not-important",
+    title: "Nicht dringend & unwichtig",
+  },
+];
+
+const ACTIVITIES = [
+  {
+    id: "yoga-nidra",
+    label: "Yoga Nidra",
+    prompt: "Mache jetzt eine Yoga-Nidra-Session.",
+    defaultRecoverySeconds: 20 * 60,
+    hasRecoveryTimer: true,
+  },
+  {
+    id: "meditation",
+    label: "Meditieren",
+    prompt: "Meditiere jetzt fuer ein paar Minuten.",
+    defaultRecoverySeconds: 10 * 60,
+    hasRecoveryTimer: true,
+  },
+  {
+    id: "walk",
+    label: "Spaziergang",
+    prompt: "Mache jetzt einen ruhigen Spaziergang.",
+    defaultRecoverySeconds: 0,
+    hasRecoveryTimer: false,
+  },
+] as const;
+
+type Activity = (typeof ACTIVITIES)[number];
+type ActivityId = Activity["id"];
+type Phase = "plasticity" | "recovery";
+
+type ActiveTimerSession =
+  | {
+      phase: "plasticity";
+      durationSeconds: number;
+      endAt: number;
+      timerName?: string;
+    }
+  | {
+      phase: "recovery";
+      activityId: ActivityId;
+      durationSeconds: number;
+      endAt: number;
+      timerName?: string;
+    };
+
+export default function PlasticityPage() {
+  const router = useRouter();
+  const spacePressTimerRef = useRef<number | null>(null);
+  const lastSpacePressRef = useRef(0);
+  const plasticityEndAtRef = useRef<number | null>(null);
+  const recoveryEndAtRef = useRef<number | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [phase, setPhase] = useState<Phase>("plasticity");
+  const [durationSeconds, setDurationSeconds] = useState(30 * 60);
+  const [remainingSeconds, setRemainingSeconds] = useState(30 * 60);
+  const [timerName, setTimerName] = useState("Plasticity");
+  const [mainView, setMainView] = useState<"timer" | "eisenhower">("timer");
+  const [eisenhowerTodos, setEisenhowerTodos] = useState<EisenhowerTodo[]>([]);
+  const [customMinutes, setCustomMinutes] = useState("0");
+  const [customSeconds, setCustomSeconds] = useState("1");
+  const [isRunning, setIsRunning] = useState(false);
+  const [selectedActivity, setSelectedActivity] = useState<Activity | null>(
+    null,
+  );
+  const [recoveryDurationSeconds, setRecoveryDurationSeconds] = useState(
+    10 * 60,
+  );
+  const [recoveryRemainingSeconds, setRecoveryRemainingSeconds] = useState(
+    10 * 60,
+  );
+  const [recoveryMinutes, setRecoveryMinutes] = useState("10");
+  const [recoverySeconds, setRecoverySeconds] = useState("0");
+  const [isRecoveryRunning, setIsRecoveryRunning] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSkipDialog, setShowSkipDialog] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [messageTone, setMessageTone] = useState<"error" | "praise">("praise");
+  const [allowedActivities, setAllowedActivities] = useState<
+    Record<ActivityId, boolean>
+  >({
+    "yoga-nidra": true,
+    meditation: true,
+    walk: true,
+  });
+
+  const allowedActivityOptions = useMemo(
+    () => ACTIVITIES.filter((activity) => allowedActivities[activity.id]),
+    [allowedActivities],
+  );
+
+  const selectedActivityCount = allowedActivityOptions.length;
+  const formattedTime = formatSeconds(remainingSeconds);
+  const formattedRecoveryTime = formatSeconds(recoveryRemainingSeconds);
+  const activeEisenhowerTodos = useMemo(
+    () => eisenhowerTodos.filter((todo) => !todo.isDone),
+    [eisenhowerTodos],
+  );
+
+  const resetFlow = useCallback((nextMessage?: string) => {
+    clearActiveTimerSession();
+    plasticityEndAtRef.current = null;
+    recoveryEndAtRef.current = null;
+    setPhase("plasticity");
+    setSelectedActivity(null);
+    setIsRunning(false);
+    setIsRecoveryRunning(false);
+    setRemainingSeconds(durationSeconds);
+    setMessage(nextMessage ?? null);
+    setMessageTone("praise");
+    setShowSkipDialog(false);
+  }, [durationSeconds]);
+
+  const beginRecovery = useCallback(() => {
+    const nextActivity = getRandomActivity(allowedActivityOptions);
+
+    if (!nextActivity) {
+      setMessage("Waehle mindestens eine Aktivitaet aus.");
+      setMessageTone("error");
+      return;
+    }
+
+    setSelectedActivity(nextActivity);
+    setPhase("recovery");
+    setMessage(null);
+
+    if (nextActivity.hasRecoveryTimer) {
+      setRecoveryDurationSeconds(nextActivity.defaultRecoverySeconds);
+      setRecoveryRemainingSeconds(nextActivity.defaultRecoverySeconds);
+      setIsRecoveryRunning(false);
+      recoveryEndAtRef.current = null;
+    }
+  }, [allowedActivityOptions]);
+
+  const startPlasticityTimer = useCallback(
+    (secondsToRun: number, name = timerName) => {
+      const endAt = Date.now() + secondsToRun * 1000;
+      plasticityEndAtRef.current = endAt;
+      saveActiveTimerSession({
+        phase: "plasticity",
+        durationSeconds: secondsToRun,
+        endAt,
+        timerName: name.trim() || "Plasticity",
+      });
+    },
+    [timerName],
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadSession() {
+      const { data, error } = await supabaseBrowser.auth.getSession();
+
+      if (!isMounted) {
+        return;
+      }
+
+      if (error || !data.session) {
+        router.replace("/login");
+        return;
+      }
+
+      setEisenhowerTodos(readEisenhowerTodos());
+      setIsLoading(false);
+      const pendingFocusSession = consumePendingFocusSession();
+
+      if (pendingFocusSession) {
+        setTimerName(pendingFocusSession.taskTitle);
+        setDurationSeconds(pendingFocusSession.seconds);
+        setRemainingSeconds(pendingFocusSession.seconds);
+        startPlasticityTimer(
+          pendingFocusSession.seconds,
+          pendingFocusSession.taskTitle,
+        );
+        setIsRunning(true);
+        setMessage(`Fokus gestartet: ${pendingFocusSession.taskTitle}`);
+        setMessageTone("praise");
+        return;
+      }
+
+      const activeTimerSession = readActiveTimerSession();
+
+      if (!activeTimerSession) {
+        return;
+      }
+
+      const nextRemainingSeconds = getRemainingSeconds(activeTimerSession.endAt);
+
+      if (activeTimerSession.phase === "plasticity") {
+        setDurationSeconds(activeTimerSession.durationSeconds);
+        setTimerName(activeTimerSession.timerName ?? "Plasticity");
+
+        if (nextRemainingSeconds > 0) {
+          plasticityEndAtRef.current = activeTimerSession.endAt;
+          setRemainingSeconds(nextRemainingSeconds);
+          setIsRunning(true);
+          return;
+        }
+
+        clearActiveTimerSession();
+        recordPlasticityStat("plasticity", activeTimerSession.durationSeconds);
+        setRemainingSeconds(0);
+        beginRecovery();
+        return;
+      }
+
+      const restoredActivity =
+        ACTIVITIES.find(
+          (activity) => activity.id === activeTimerSession.activityId,
+        ) ?? null;
+
+      if (!restoredActivity) {
+        clearActiveTimerSession();
+        return;
+      }
+
+      setPhase("recovery");
+      setSelectedActivity(restoredActivity);
+      setRecoveryDurationSeconds(activeTimerSession.durationSeconds);
+      setTimerName(activeTimerSession.timerName ?? "Plasticity");
+
+      if (nextRemainingSeconds > 0) {
+        recoveryEndAtRef.current = activeTimerSession.endAt;
+        setRecoveryRemainingSeconds(nextRemainingSeconds);
+        setIsRecoveryRunning(true);
+        return;
+      }
+
+      clearActiveTimerSession();
+      recordPlasticityStat(restoredActivity.id, activeTimerSession.durationSeconds);
+      resetFlow(getRandomPraise());
+    }
+
+    loadSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [beginRecovery, resetFlow, router, startPlasticityTimer]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      const nextRemainingSeconds = getRemainingSeconds(plasticityEndAtRef.current);
+
+      if (nextRemainingSeconds > 0) {
+        setRemainingSeconds(nextRemainingSeconds);
+        return;
+      }
+
+      setRemainingSeconds(0);
+      setIsRunning(false);
+      clearActiveTimerSession();
+      plasticityEndAtRef.current = null;
+      recordPlasticityStat("plasticity", durationSeconds);
+      beginRecovery();
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [beginRecovery, durationSeconds, isRunning]);
+
+  useEffect(() => {
+    if (!isRecoveryRunning) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      const nextRemainingSeconds = getRemainingSeconds(recoveryEndAtRef.current);
+
+      if (nextRemainingSeconds > 0) {
+        setRecoveryRemainingSeconds(nextRemainingSeconds);
+        return;
+      }
+
+      setRecoveryRemainingSeconds(0);
+      setIsRecoveryRunning(false);
+      clearActiveTimerSession();
+      recoveryEndAtRef.current = null;
+      if (selectedActivity) {
+        recordPlasticityStat(selectedActivity.id, recoveryDurationSeconds);
+      }
+      resetFlow(getRandomPraise());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [isRecoveryRunning, recoveryDurationSeconds, resetFlow, selectedActivity]);
+
+  useEffect(() => {
+    if (!isRecoveryRunning || !selectedActivity) {
+      return;
+    }
+
+    if (!recoveryEndAtRef.current) {
+      const endAt = Date.now() + recoveryRemainingSeconds * 1000;
+      recoveryEndAtRef.current = endAt;
+      saveActiveTimerSession({
+        phase: "recovery",
+        activityId: selectedActivity.id,
+        durationSeconds: recoveryDurationSeconds,
+        endAt,
+        timerName,
+      });
+    }
+  }, [
+    isRecoveryRunning,
+    recoveryDurationSeconds,
+    recoveryRemainingSeconds,
+    selectedActivity,
+    timerName,
+  ]);
+
+  useEffect(() => {
+    if (isRunning && !plasticityEndAtRef.current) {
+      startPlasticityTimer(remainingSeconds, timerName);
+    }
+  }, [isRunning, remainingSeconds, startPlasticityTimer, timerName]);
+
+  useEffect(() => {
+    if (phase !== "recovery" || !selectedActivity?.hasRecoveryTimer) {
+      return;
+    }
+
+    function handleSpacePress(event: KeyboardEvent) {
+      if (event.code !== "Space" || isTypingTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const now = Date.now();
+      const isDoublePress = now - lastSpacePressRef.current < DOUBLE_SPACE_DELAY_MS;
+      lastSpacePressRef.current = now;
+
+      if (isDoublePress) {
+        if (spacePressTimerRef.current) {
+          window.clearTimeout(spacePressTimerRef.current);
+          spacePressTimerRef.current = null;
+        }
+
+        setRecoveryRemainingSeconds(
+          getRemainingSeconds(recoveryEndAtRef.current) ||
+            recoveryRemainingSeconds,
+        );
+        clearActiveTimerSession();
+        recoveryEndAtRef.current = null;
+        setIsRecoveryRunning(false);
+        setShowSkipDialog(true);
+        return;
+      }
+
+      spacePressTimerRef.current = window.setTimeout(() => {
+        setIsRecoveryRunning(true);
+        spacePressTimerRef.current = null;
+      }, DOUBLE_SPACE_DELAY_MS);
+    }
+
+    window.addEventListener("keydown", handleSpacePress);
+
+    return () => {
+      window.removeEventListener("keydown", handleSpacePress);
+
+      if (spacePressTimerRef.current) {
+        window.clearTimeout(spacePressTimerRef.current);
+        spacePressTimerRef.current = null;
+      }
+    };
+  }, [phase, recoveryRemainingSeconds, selectedActivity]);
+
+  useEffect(() => {
+    if (!message || messageTone !== "praise") {
+      return;
+    }
+
+    const timerId = window.setTimeout(() => {
+      setMessage(null);
+    }, 3000);
+
+    return () => window.clearTimeout(timerId);
+  }, [message, messageTone]);
+
+  function updateTimerName(nextName: string) {
+    setTimerName(nextName);
+
+    const activeTimerSession = readActiveTimerSession();
+
+    if (!activeTimerSession) {
+      return;
+    }
+
+    saveActiveTimerSession({
+      ...activeTimerSession,
+      timerName: nextName.trim() || "Plasticity",
+    });
+  }
+
+  function selectDuration(secondsToSelect: number) {
+    clearActiveTimerSession();
+    plasticityEndAtRef.current = null;
+    setDurationSeconds(secondsToSelect);
+    setRemainingSeconds(secondsToSelect);
+    setIsRunning(false);
+    setMessage(null);
+  }
+
+  function applyCustomDuration() {
+    const nextDurationSeconds = getClampedSeconds(customMinutes, customSeconds);
+
+    selectDuration(nextDurationSeconds);
+    setShowSettings(false);
+  }
+
+  function applyRecoveryDuration() {
+    setRecoveryDuration(getClampedSeconds(recoveryMinutes, recoverySeconds));
+  }
+
+  function setRecoveryDuration(secondsToSelect: number) {
+    const nextDurationSeconds = Math.min(
+      MAX_DURATION_SECONDS,
+      Math.max(1, secondsToSelect),
+    );
+
+    setRecoveryDurationSeconds(nextDurationSeconds);
+    setRecoveryRemainingSeconds(nextDurationSeconds);
+    setIsRecoveryRunning(false);
+    clearActiveTimerSession();
+    recoveryEndAtRef.current = null;
+    setMessage(null);
+  }
+
+  function toggleActivity(activityId: ActivityId) {
+    setAllowedActivities((currentActivities) => ({
+      ...currentActivities,
+      [activityId]: !currentActivities[activityId],
+    }));
+    setMessage(null);
+  }
+
+  function startTimer() {
+    if (selectedActivityCount === 0) {
+      setMessage("Waehle mindestens eine Aktivitaet aus.");
+      setMessageTone("error");
+      return;
+    }
+
+    setMessage(null);
+    setMessageTone("praise");
+    setIsRunning(true);
+  }
+
+  function pauseTimer() {
+    const nextRemainingSeconds = getRemainingSeconds(plasticityEndAtRef.current);
+    setRemainingSeconds(nextRemainingSeconds || remainingSeconds);
+    clearActiveTimerSession();
+    plasticityEndAtRef.current = null;
+    setIsRunning(false);
+  }
+
+  function resetTimer() {
+    clearActiveTimerSession();
+    plasticityEndAtRef.current = null;
+    setIsRunning(false);
+    setRemainingSeconds(durationSeconds);
+    setMessage(null);
+  }
+
+  function toggleRecoveryTimer() {
+    if (isRecoveryRunning) {
+      const nextRemainingSeconds = getRemainingSeconds(recoveryEndAtRef.current);
+      setRecoveryRemainingSeconds(
+        nextRemainingSeconds || recoveryRemainingSeconds,
+      );
+      clearActiveTimerSession();
+      recoveryEndAtRef.current = null;
+      setIsRecoveryRunning(false);
+      return;
+    }
+
+    const endAt = Date.now() + recoveryRemainingSeconds * 1000;
+    recoveryEndAtRef.current = endAt;
+
+    if (selectedActivity) {
+      saveActiveTimerSession({
+        phase: "recovery",
+        activityId: selectedActivity.id,
+        durationSeconds: recoveryDurationSeconds,
+        endAt,
+        timerName,
+      });
+    }
+
+    setIsRecoveryRunning(true);
+  }
+
+  function skipRecovery() {
+    setIsRecoveryRunning(false);
+    setShowSkipDialog(false);
+    resetFlow("Alles gut. Du bist wieder bereit fuer die naechste Runde.");
+  }
+
+  if (isLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-4 text-zinc-950">
+        <p className="text-sm font-medium text-zinc-600">
+          Session wird geprueft...
+        </p>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
+      <section className="mx-auto w-full max-w-3xl">
+        <header className="mb-8 flex flex-col gap-4 border-b border-zinc-200 pb-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
+              Neuroplex
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+              Plasticity
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link
+              href="/dashboard"
+              aria-label="Home"
+              title="Home"
+              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+            >
+              <HomeIcon />
+            </Link>
+
+            <Link
+              href="/personal"
+              aria-label="Persoenlicher Bereich"
+              title="Persoenlicher Bereich"
+              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+            >
+              <UserIcon />
+            </Link>
+          </div>
+        </header>
+
+        {phase === "plasticity" && (
+          <>
+            {message && (
+              <div
+                className={`mb-4 rounded-lg border p-4 ${
+                  messageTone === "praise"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-red-200 bg-red-50 text-red-700"
+                }`}
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.16em]">
+                  Lob
+                </p>
+                <p className="mt-2 text-sm font-medium">{message}</p>
+              </div>
+            )}
+
+            <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                  Haupttimer
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label={
+                      mainView === "timer"
+                        ? "Matrix anzeigen"
+                        : "Timer anzeigen"
+                    }
+                    title={
+                      mainView === "timer"
+                        ? "Matrix anzeigen"
+                        : "Timer anzeigen"
+                    }
+                    onClick={() =>
+                      setMainView(mainView === "timer" ? "eisenhower" : "timer")
+                    }
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                  >
+                    {mainView === "timer" ? <MatrixIcon /> : <TimerIcon />}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Einstellungen oeffnen"
+                    title="Einstellungen"
+                    onClick={() => setShowSettings(true)}
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                  >
+                    <SettingsIcon />
+                  </button>
+                </div>
+              </div>
+
+              <label className="mt-5 block text-sm font-medium text-zinc-700">
+                Timer-Name
+                <input
+                  value={timerName}
+                  onChange={(event) => updateTimerName(event.target.value)}
+                  placeholder="Timer benennen"
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+
+              {mainView === "timer" ? (
+                <>
+                  <div className="mt-5 rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-8 text-center">
+                    <p className="text-6xl font-semibold tabular-nums tracking-tight text-zinc-950 sm:text-7xl">
+                      {formattedTime}
+                    </p>
+                  </div>
+
+                  <div className="mt-5 flex items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={isRunning ? pauseTimer : startTimer}
+                      disabled={selectedActivityCount === 0}
+                      className="flex h-10 min-w-32 items-center justify-center rounded-md bg-zinc-950 px-5 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
+                    >
+                      {isRunning ? "Pause" : "Start"}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Timer zuruecksetzen"
+                      title="Reset"
+                      onClick={resetTimer}
+                      className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                    >
+                      <ResetIcon />
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                      Eisenhower Mini
+                    </p>
+                    <p className="text-sm font-semibold tabular-nums text-zinc-900">
+                      {formattedTime}
+                    </p>
+                  </div>
+
+                  <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+                    <div className="grid grid-cols-1 sm:grid-cols-2">
+                      {MINI_QUADRANTS.map((quadrant) => {
+                        const quadrantTodos = activeEisenhowerTodos.filter(
+                          (todo) => todo.quadrant === quadrant.id,
+                        );
+                        const borderClass =
+                          quadrant.id === "urgent-important"
+                            ? "border-b border-zinc-200 sm:border-r"
+                            : quadrant.id === "not-urgent-important"
+                              ? "border-b border-zinc-200"
+                              : quadrant.id === "urgent-not-important"
+                                ? "border-b border-zinc-200 sm:border-r sm:border-b-0"
+                                : "";
+
+                        return (
+                          <div
+                            key={quadrant.id}
+                            className={`min-h-28 p-3 ${borderClass}`}
+                          >
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                              {quadrant.title}
+                            </p>
+                            <div className="mt-2 space-y-1">
+                              {quadrantTodos.slice(0, 3).map((todo) => (
+                                <p
+                                  key={todo.id}
+                                  className="truncate rounded border border-zinc-100 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-800"
+                                >
+                                  {todo.title}
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {phase === "recovery" && selectedActivity && (
+          <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
+              Recovery
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight">
+              {selectedActivity.prompt}
+            </h2>
+
+            {selectedActivity.hasRecoveryTimer ? (
+              <>
+                <p className="mt-8 text-center text-6xl font-semibold tabular-nums tracking-tight">
+                  {formattedRecoveryTime}
+                </p>
+
+                <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 p-4">
+                  <p className="text-sm font-medium text-zinc-700">
+                    Recovery-Timer
+                  </p>
+                  <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                    <label className="block text-sm font-medium text-zinc-700">
+                      Minuten
+                      <input
+                        type="number"
+                        min={0}
+                        max={120}
+                        value={recoveryMinutes}
+                        onChange={(event) =>
+                          setRecoveryMinutes(event.target.value)
+                        }
+                        className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                      />
+                    </label>
+
+                    <label className="block text-sm font-medium text-zinc-700">
+                      Sekunden
+                      <input
+                        type="number"
+                        min={0}
+                        max={59}
+                        value={recoverySeconds}
+                        onChange={(event) =>
+                          setRecoverySeconds(event.target.value)
+                        }
+                        className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={applyRecoveryDuration}
+                      className="flex h-11 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+                    >
+                      Uebernehmen
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={toggleRecoveryTimer}
+                    className="flex h-11 flex-1 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+                  >
+                    {isRecoveryRunning ? "Pause" : "Start"}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Recovery-Timer zuruecksetzen"
+                    title="Reset"
+                    onClick={() => setRecoveryDuration(recoveryDurationSeconds)}
+                    className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                  >
+                    <ResetIcon />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetFlow(getRandomPraise());
+                  }}
+                  className="flex h-11 flex-1 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+                >
+                  Abschliessen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSkipDialog(true)}
+                  className="flex h-11 flex-1 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+                >
+                  Ueberspringen
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+      </section>
+
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-6 text-zinc-950 shadow-xl"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-xl font-semibold tracking-tight">
+                Einstellungen
+              </h2>
+              <button
+                type="button"
+                aria-label="Einstellungen schliessen"
+                title="Schliessen"
+                onClick={() => setShowSettings(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="mt-6">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Timer-Presets
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+                {TIMER_OPTIONS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => {
+                      selectDuration(option * 60);
+                      setShowSettings(false);
+                    }}
+                    className={`h-10 rounded-md border px-3 text-sm font-semibold transition ${
+                      durationSeconds === option * 60
+                        ? "border-zinc-950 bg-zinc-950 text-white"
+                        : "border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
+                    }`}
+                  >
+                    {option}m
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Custom-Zeit
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                <label className="block text-sm font-medium text-zinc-700">
+                  Minuten
+                  <input
+                    type="number"
+                    min={0}
+                    max={120}
+                    value={customMinutes}
+                    onChange={(event) => setCustomMinutes(event.target.value)}
+                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                  />
+                </label>
+
+                <label className="block text-sm font-medium text-zinc-700">
+                  Sekunden
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={customSeconds}
+                    onChange={(event) => setCustomSeconds(event.target.value)}
+                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={applyCustomDuration}
+                  className="flex h-11 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+                >
+                  Uebernehmen
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Aktivitaeten
+              </p>
+
+              <div className="mt-3 space-y-3">
+                {ACTIVITIES.map((activity) => (
+                  <label
+                    key={activity.id}
+                    className="flex items-center justify-between gap-4 rounded-md border border-zinc-200 px-4 py-3 text-sm font-medium text-zinc-800"
+                  >
+                    {activity.label}
+                    <input
+                      type="checkbox"
+                      checked={allowedActivities[activity.id]}
+                      onChange={() => toggleActivity(activity.id)}
+                      className="h-5 w-5 accent-zinc-950"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSkipDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-sm rounded-lg bg-white p-6 text-zinc-950 shadow-xl"
+          >
+            <h2 className="text-xl font-semibold tracking-tight">
+              Wirklich ueberspringen?
+            </h2>
+            <p className="mt-3 text-sm text-zinc-600">
+              Die aktuelle Recovery wird beendet.
+            </p>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => setShowSkipDialog(false)}
+                className="flex h-10 flex-1 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+              >
+                Nein
+              </button>
+              <button
+                type="button"
+                onClick={skipRecovery}
+                className="flex h-10 flex-1 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+              >
+                Ja
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}
+
+function getClampedSeconds(minutes: string, seconds: string) {
+  const minutesValue = Number(minutes);
+  const secondsValue = Number(seconds);
+  const nextDurationSeconds = minutesValue * 60 + secondsValue;
+
+  if (!Number.isFinite(nextDurationSeconds)) {
+    return 1;
+  }
+
+  return Math.min(MAX_DURATION_SECONDS, Math.max(1, nextDurationSeconds));
+}
+
+function getRandomActivity(activities: Activity[]) {
+  if (activities.length === 0) {
+    return null;
+  }
+
+  return activities[Math.floor(Math.random() * activities.length)];
+}
+
+function getRandomPraise() {
+  return PRAISE_MESSAGES[Math.floor(Math.random() * PRAISE_MESSAGES.length)];
+}
+
+function formatSeconds(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(
+    2,
+    "0",
+  )}`;
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName);
+}
+
+function getRemainingSeconds(endAt: number | null) {
+  if (!endAt) {
+    return 0;
+  }
+
+  return Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+}
+
+function readActiveTimerSession() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawSession = window.localStorage.getItem(ACTIVE_TIMER_STORAGE_KEY);
+
+  if (!rawSession) {
+    return null;
+  }
+
+  try {
+    const parsedSession = JSON.parse(rawSession);
+    return isActiveTimerSession(parsedSession) ? parsedSession : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveTimerSession(session: ActiveTimerSession) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    ACTIVE_TIMER_STORAGE_KEY,
+    JSON.stringify(session),
+  );
+}
+
+function clearActiveTimerSession() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(ACTIVE_TIMER_STORAGE_KEY);
+}
+
+function isActiveTimerSession(value: unknown): value is ActiveTimerSession {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const session = value as Partial<ActiveTimerSession>;
+
+  if (
+    typeof session.durationSeconds !== "number" ||
+    typeof session.endAt !== "number"
+  ) {
+    return false;
+  }
+
+  if (session.phase === "plasticity") {
+    return true;
+  }
+
+  return (
+    session.phase === "recovery" &&
+    (session.activityId === "yoga-nidra" ||
+      session.activityId === "meditation" ||
+      session.activityId === "walk")
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+      <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 1 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.09 1.65V21.3a2.1 2.1 0 1 1-4.2 0v-.07a1.8 1.8 0 0 0-1.09-1.65 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 1 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 3.84 15a1.8 1.8 0 0 0-1.65-1.09H2.1a2.1 2.1 0 1 1 0-4.2h.09a1.8 1.8 0 0 0 1.65-1.09 1.8 1.8 0 0 0-.36-1.98l-.05-.05a2.1 2.1 0 1 1 2.97-2.97l.05.05a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.09-1.65V2.1a2.1 2.1 0 1 1 4.2 0v.09a1.8 1.8 0 0 0 1.09 1.65 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 1 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.09h.09a2.1 2.1 0 1 1 0 4.2h-.09A1.8 1.8 0 0 0 19.4 15Z" />
+    </svg>
+  );
+}
+
+function MatrixIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 4h16v16H4z" />
+      <path d="M12 4v16" />
+      <path d="M4 12h16" />
+    </svg>
+  );
+}
+
+function TimerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M10 2h4" />
+      <path d="M12 14V8" />
+      <path d="M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z" />
+    </svg>
+  );
+}
+
+function ResetIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v6h6" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function HomeIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="m3 10 9-7 9 7" />
+      <path d="M5 10v10h14V10" />
+      <path d="M9 20v-6h6v6" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <path d="M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
+    </svg>
+  );
+}
