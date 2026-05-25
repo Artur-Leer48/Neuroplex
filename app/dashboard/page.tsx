@@ -132,6 +132,27 @@ export default function DashboardPage() {
             </Link>
           </div>
         </div>
+
+        <div className="mt-6 rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
+          <p className="text-sm font-medium text-zinc-500">Lernen</p>
+          <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold tracking-tight">
+                Learning Topics
+              </h2>
+              <p className="mt-1 text-sm text-zinc-600">
+                Plane Ressourcen, Wiederholungen und Active-Recall-Sessions.
+              </p>
+            </div>
+
+            <Link
+              href="/learning"
+              className="flex h-10 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+            >
+              Start Learning
+            </Link>
+          </div>
+        </div>
       </section>
     </main>
   );

@@ -5,6 +5,10 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  CURRENT_TASK_CHANGED_EVENT,
+  readCurrentTask,
+} from "@/lib/current-task";
+import {
   readEisenhowerTodos,
   type EisenhowerQuadrant,
   type EisenhowerTodo,
@@ -19,6 +23,7 @@ const DOUBLE_SPACE_DELAY_MS = 350;
 const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
 const ACTIVE_FOCUS_PREP_STORAGE_KEY = "neuroplex:active-focus-prep";
 const FOCUS_PREP_SETTINGS_STORAGE_KEY = "neuroplex:focus-prep-settings";
+const PLASTICITY_SETTINGS_STORAGE_KEY = "neuroplex:plasticity-settings";
 const PRAISE_MESSAGES = [
   "Sehr gut gemacht! Du hast deinem Gehirn gerade Zeit gegeben, das Gelernte zu sortieren.",
   "Stark abgeschlossen. Genau solche Pausen machen Training wirksam.",
@@ -120,15 +125,15 @@ export default function PlasticityPage() {
   const [durationSeconds, setDurationSeconds] = useState(30 * 60);
   const [remainingSeconds, setRemainingSeconds] = useState(30 * 60);
   const [isFocusPrepActive, setIsFocusPrepActive] = useState(false);
-  const [focusPrepDurationSeconds, setFocusPrepDurationSeconds] = useState(30);
-  const [focusPrepInputSeconds, setFocusPrepInputSeconds] = useState("30");
+  const [focusPrepDurationSeconds, setFocusPrepDurationSeconds] = useState(45);
+  const [focusPrepInputSeconds, setFocusPrepInputSeconds] = useState("45");
   const [focusPrepRemainingSeconds, setFocusPrepRemainingSeconds] =
     useState(30);
+  const [isFocusPrepEnabled, setIsFocusPrepEnabled] = useState(true);
   const [timerName, setTimerName] = useState("Plasticity");
   const [mainView, setMainView] = useState<"timer" | "eisenhower">("timer");
   const [eisenhowerTodos, setEisenhowerTodos] = useState<EisenhowerTodo[]>([]);
   const [customMinutes, setCustomMinutes] = useState("0");
-  const [customSeconds, setCustomSeconds] = useState("1");
   const [isRunning, setIsRunning] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState<Activity | null>(
     null,
@@ -143,6 +148,7 @@ export default function PlasticityPage() {
   const [recoverySeconds, setRecoverySeconds] = useState("0");
   const [isRecoveryRunning, setIsRecoveryRunning] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showRecoverySettings, setShowRecoverySettings] = useState(false);
   const [showSkipDialog, setShowSkipDialog] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"error" | "praise">("praise");
@@ -182,6 +188,7 @@ export default function PlasticityPage() {
     setMessage(nextMessage ?? null);
     setMessageTone("praise");
     setShowSkipDialog(false);
+    setShowRecoverySettings(false);
   }, [durationSeconds]);
 
   const beginRecovery = useCallback(() => {
@@ -198,12 +205,24 @@ export default function PlasticityPage() {
     setMessage(null);
 
     if (nextActivity.hasRecoveryTimer) {
+      const endAt = Date.now() + nextActivity.defaultRecoverySeconds * 1000;
       setRecoveryDurationSeconds(nextActivity.defaultRecoverySeconds);
       setRecoveryRemainingSeconds(nextActivity.defaultRecoverySeconds);
-      setIsRecoveryRunning(false);
-      recoveryEndAtRef.current = null;
+      setRecoveryMinutes(String(Math.floor(nextActivity.defaultRecoverySeconds / 60)));
+      setRecoverySeconds(String(nextActivity.defaultRecoverySeconds % 60));
+      setIsRecoveryRunning(true);
+      recoveryEndAtRef.current = endAt;
+      saveActiveTimerSession({
+        phase: "recovery",
+        activityId: nextActivity.id,
+        durationSeconds: nextActivity.defaultRecoverySeconds,
+        endAt,
+        timerName,
+        taskId: activeTaskRef.current?.id ?? null,
+        taskTitle: activeTaskRef.current?.title ?? null,
+      });
     }
-  }, [allowedActivityOptions]);
+  }, [allowedActivityOptions, timerName]);
 
   const startPlasticityTimer = useCallback(
     (
@@ -269,7 +288,11 @@ export default function PlasticityPage() {
       setDurationSeconds(sessionDurationSeconds);
       setRemainingSeconds(sessionDurationSeconds);
       setTimerName(nextTimerName);
-      startPlasticityTimer(sessionDurationSeconds, nextTimerName, nextTask);
+      startPlasticityTimer(
+        sessionDurationSeconds,
+        nextTimerName,
+        nextTask ?? undefined,
+      );
       setIsRunning(true);
     },
     [durationSeconds, startPlasticityTimer, timerName],
@@ -291,6 +314,13 @@ export default function PlasticityPage() {
       }
 
       setEisenhowerTodos(readEisenhowerTodos());
+      const savedPlasticitySettings = readPlasticitySettings();
+      const savedDefaultDurationSeconds =
+        savedPlasticitySettings.defaultDurationSeconds;
+      setDurationSeconds(savedDefaultDurationSeconds);
+      setRemainingSeconds(savedDefaultDurationSeconds);
+      setCustomMinutes(String(Math.round(savedDefaultDurationSeconds / 60)));
+      setIsFocusPrepEnabled(savedPlasticitySettings.isFocusPrepEnabled);
       const savedFocusPrepSeconds = readFocusPrepDurationSeconds();
       setFocusPrepDurationSeconds(savedFocusPrepSeconds);
       setFocusPrepInputSeconds(String(savedFocusPrepSeconds));
@@ -392,6 +422,8 @@ export default function PlasticityPage() {
       setPhase("recovery");
       setSelectedActivity(restoredActivity);
       setRecoveryDurationSeconds(activeTimerSession.durationSeconds);
+      setRecoveryMinutes(String(Math.floor(activeTimerSession.durationSeconds / 60)));
+      setRecoverySeconds(String(activeTimerSession.durationSeconds % 60));
       setTimerName(activeTimerSession.timerName ?? "Plasticity");
       activeTaskRef.current = {
         id: activeTimerSession.taskId ?? null,
@@ -422,6 +454,31 @@ export default function PlasticityPage() {
   }, [beginRecovery, completeFocusPrep, resetFlow, router, startFocusPrep]);
 
   useEffect(() => {
+    function syncCurrentTask() {
+      const currentTask = readCurrentTask();
+
+      if (!currentTask || isRunning || isFocusPrepActive || phase !== "plasticity") {
+        return;
+      }
+
+      activeTaskRef.current = {
+        id: currentTask.id,
+        title: currentTask.title,
+      };
+      setTimerName(currentTask.title);
+    }
+
+    syncCurrentTask();
+    window.addEventListener("storage", syncCurrentTask);
+    window.addEventListener(CURRENT_TASK_CHANGED_EVENT, syncCurrentTask);
+
+    return () => {
+      window.removeEventListener("storage", syncCurrentTask);
+      window.removeEventListener(CURRENT_TASK_CHANGED_EVENT, syncCurrentTask);
+    };
+  }, [isFocusPrepActive, isRunning, phase]);
+
+  useEffect(() => {
     if (!isRunning) {
       return;
     }
@@ -449,6 +506,63 @@ export default function PlasticityPage() {
 
     return () => window.clearInterval(timerId);
   }, [beginRecovery, durationSeconds, isRunning]);
+
+  useEffect(() => {
+    if (!isFocusPrepActive) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      const nextPrepRemainingSeconds = getRemainingSeconds(
+        focusPrepEndAtRef.current,
+      );
+
+      if (nextPrepRemainingSeconds > 0) {
+        setFocusPrepRemainingSeconds(nextPrepRemainingSeconds);
+        return;
+      }
+
+      setFocusPrepRemainingSeconds(0);
+      completeFocusPrep(readActiveFocusPrepSession());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [completeFocusPrep, isFocusPrepActive]);
+
+  useEffect(() => {
+    if (!isFocusPrepActive) {
+      return;
+    }
+
+    function handleFocusPrepSpacePress(event: KeyboardEvent) {
+      if (event.code !== "Space" || isTypingTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const now = Date.now();
+      const isDoublePress =
+        now - lastSpacePressRef.current < DOUBLE_SPACE_DELAY_MS;
+      lastSpacePressRef.current = now;
+
+      if (!isDoublePress) {
+        return;
+      }
+
+      clearActiveFocusPrepSession();
+      focusPrepEndAtRef.current = null;
+      setIsFocusPrepActive(false);
+      setFocusPrepRemainingSeconds(focusPrepDurationSeconds);
+      setMessage(null);
+    }
+
+    window.addEventListener("keydown", handleFocusPrepSpacePress);
+
+    return () => {
+      window.removeEventListener("keydown", handleFocusPrepSpacePress);
+    };
+  }, [focusPrepDurationSeconds, isFocusPrepActive]);
 
   useEffect(() => {
     if (!isRecoveryRunning) {
@@ -546,7 +660,34 @@ export default function PlasticityPage() {
       }
 
       spacePressTimerRef.current = window.setTimeout(() => {
-        setIsRecoveryRunning(true);
+        if (isRecoveryRunning) {
+          const nextRemainingSeconds = getRemainingSeconds(
+            recoveryEndAtRef.current,
+          );
+          setRecoveryRemainingSeconds(
+            nextRemainingSeconds || recoveryRemainingSeconds,
+          );
+          clearActiveTimerSession();
+          recoveryEndAtRef.current = null;
+          setIsRecoveryRunning(false);
+        } else {
+          const endAt = Date.now() + recoveryRemainingSeconds * 1000;
+          recoveryEndAtRef.current = endAt;
+
+          if (selectedActivity) {
+            saveActiveTimerSession({
+              phase: "recovery",
+              activityId: selectedActivity.id,
+              durationSeconds: recoveryDurationSeconds,
+              endAt,
+              timerName,
+              taskId: activeTaskRef.current?.id ?? null,
+              taskTitle: activeTaskRef.current?.title ?? null,
+            });
+          }
+
+          setIsRecoveryRunning(true);
+        }
         spacePressTimerRef.current = null;
       }, DOUBLE_SPACE_DELAY_MS);
     }
@@ -561,7 +702,14 @@ export default function PlasticityPage() {
         spacePressTimerRef.current = null;
       }
     };
-  }, [phase, recoveryRemainingSeconds, selectedActivity]);
+  }, [
+    isRecoveryRunning,
+    phase,
+    recoveryDurationSeconds,
+    recoveryRemainingSeconds,
+    selectedActivity,
+    timerName,
+  ]);
 
   useEffect(() => {
     if (!message || messageTone !== "praise") {
@@ -574,6 +722,42 @@ export default function PlasticityPage() {
 
     return () => window.clearTimeout(timerId);
   }, [message, messageTone]);
+
+  useEffect(() => {
+    if (!showSettings) {
+      return;
+    }
+
+    function handleSettingsEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setShowSettings(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleSettingsEscape);
+
+    return () => {
+      window.removeEventListener("keydown", handleSettingsEscape);
+    };
+  }, [showSettings]);
+
+  useEffect(() => {
+    if (!showRecoverySettings) {
+      return;
+    }
+
+    function handleRecoverySettingsEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setShowRecoverySettings(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleRecoverySettingsEscape);
+
+    return () => {
+      window.removeEventListener("keydown", handleRecoverySettingsEscape);
+    };
+  }, [showRecoverySettings]);
 
   function updateTimerName(nextName: string) {
     setTimerName(nextName);
@@ -600,14 +784,40 @@ export default function PlasticityPage() {
   }
 
   function applyCustomDuration() {
-    const nextDurationSeconds = getClampedSeconds(customMinutes, customSeconds);
+    const nextDurationSeconds = Math.min(
+      MAX_DURATION_SECONDS,
+      Math.max(5 * 60, Number(customMinutes) * 60),
+    );
 
     selectDuration(nextDurationSeconds);
-    setShowSettings(false);
+    savePlasticitySettings({
+      defaultDurationSeconds: nextDurationSeconds,
+      isFocusPrepEnabled,
+    });
+    setCustomMinutes(String(Math.floor(nextDurationSeconds / 60)));
+  }
+
+  function applyFocusPrepDuration() {
+    const nextDurationSeconds = Math.min(
+      MAX_DURATION_SECONDS,
+      Math.max(1, Number(focusPrepInputSeconds)),
+    );
+
+    if (!Number.isFinite(nextDurationSeconds)) {
+      setFocusPrepDurationSeconds(60);
+      setFocusPrepInputSeconds("60");
+      saveFocusPrepDurationSeconds(60);
+      return;
+    }
+
+    setFocusPrepDurationSeconds(nextDurationSeconds);
+    setFocusPrepInputSeconds(String(nextDurationSeconds));
+    saveFocusPrepDurationSeconds(nextDurationSeconds);
   }
 
   function applyRecoveryDuration() {
     setRecoveryDuration(getClampedSeconds(recoveryMinutes, recoverySeconds));
+    setShowRecoverySettings(false);
   }
 
   function setRecoveryDuration(secondsToSelect: number) {
@@ -618,9 +828,27 @@ export default function PlasticityPage() {
 
     setRecoveryDurationSeconds(nextDurationSeconds);
     setRecoveryRemainingSeconds(nextDurationSeconds);
-    setIsRecoveryRunning(false);
     clearActiveTimerSession();
+    setMessage(null);
+
+    if (phase === "recovery" && selectedActivity?.hasRecoveryTimer) {
+      const endAt = Date.now() + nextDurationSeconds * 1000;
+      recoveryEndAtRef.current = endAt;
+      saveActiveTimerSession({
+        phase: "recovery",
+        activityId: selectedActivity.id,
+        durationSeconds: nextDurationSeconds,
+        endAt,
+        timerName,
+        taskId: activeTaskRef.current?.id ?? null,
+        taskTitle: activeTaskRef.current?.title ?? null,
+      });
+      setIsRecoveryRunning(true);
+      return;
+    }
+
     recoveryEndAtRef.current = null;
+    setIsRecoveryRunning(false);
     setMessage(null);
   }
 
@@ -632,6 +860,17 @@ export default function PlasticityPage() {
     setMessage(null);
   }
 
+  function toggleFocusPrepEnabled() {
+    setIsFocusPrepEnabled((currentValue) => {
+      const nextValue = !currentValue;
+      savePlasticitySettings({
+        defaultDurationSeconds: durationSeconds,
+        isFocusPrepEnabled: nextValue,
+      });
+      return nextValue;
+    });
+  }
+
   function startTimer() {
     if (selectedActivityCount === 0) {
       setMessage("Waehle mindestens eine Aktivitaet aus.");
@@ -639,8 +878,25 @@ export default function PlasticityPage() {
       return;
     }
 
+    const currentTask = readCurrentTask();
+    const nextTimerName = currentTask?.title ?? timerName;
+
+    if (currentTask) {
+      activeTaskRef.current = {
+        id: currentTask.id,
+        title: currentTask.title,
+      };
+      setTimerName(currentTask.title);
+    }
+
     setMessage(null);
     setMessageTone("praise");
+
+    if (isFocusPrepEnabled) {
+      startFocusPrep(durationSeconds, nextTimerName);
+      return;
+    }
+
     setIsRunning(true);
   }
 
@@ -654,38 +910,13 @@ export default function PlasticityPage() {
 
   function resetTimer() {
     clearActiveTimerSession();
+    clearActiveFocusPrepSession();
     plasticityEndAtRef.current = null;
+    focusPrepEndAtRef.current = null;
+    setIsFocusPrepActive(false);
     setIsRunning(false);
     setRemainingSeconds(durationSeconds);
     setMessage(null);
-  }
-
-  function toggleRecoveryTimer() {
-    if (isRecoveryRunning) {
-      const nextRemainingSeconds = getRemainingSeconds(recoveryEndAtRef.current);
-      setRecoveryRemainingSeconds(
-        nextRemainingSeconds || recoveryRemainingSeconds,
-      );
-      clearActiveTimerSession();
-      recoveryEndAtRef.current = null;
-      setIsRecoveryRunning(false);
-      return;
-    }
-
-    const endAt = Date.now() + recoveryRemainingSeconds * 1000;
-    recoveryEndAtRef.current = endAt;
-
-    if (selectedActivity) {
-      saveActiveTimerSession({
-        phase: "recovery",
-        activityId: selectedActivity.id,
-        durationSeconds: recoveryDurationSeconds,
-        endAt,
-        timerName,
-      });
-    }
-
-    setIsRecoveryRunning(true);
   }
 
   function skipRecovery() {
@@ -735,8 +966,24 @@ export default function PlasticityPage() {
             >
               <UserIcon />
             </Link>
+
+            <Link
+              href="/learning"
+              className="flex h-10 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+            >
+              Learning
+            </Link>
           </div>
         </header>
+
+        {isFocusPrepActive && (
+          <div className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-zinc-50 px-4 text-zinc-950">
+            <p className="absolute right-5 top-5 text-sm font-medium tabular-nums text-zinc-300">
+              {formatSeconds(focusPrepRemainingSeconds)}
+            </p>
+            <div className="h-20 w-20 rounded-full bg-black sm:h-26 sm:w-26" />
+          </div>
+        )}
 
         {phase === "plasticity" && (
           <>
@@ -761,6 +1008,31 @@ export default function PlasticityPage() {
                   Haupttimer
                 </p>
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label={
+                      isFocusPrepEnabled
+                        ? "Priming deaktivieren"
+                        : "Priming aktivieren"
+                    }
+                    title={
+                      isFocusPrepEnabled
+                        ? "Priming aktiv"
+                        : "Priming deaktiviert"
+                    }
+                    onClick={toggleFocusPrepEnabled}
+                    className={`flex h-9 w-9 items-center justify-center rounded-md border bg-white transition ${
+                      isFocusPrepEnabled
+                        ? "border-zinc-950 text-zinc-950"
+                        : "border-zinc-300 text-zinc-500 hover:border-zinc-950"
+                    }`}
+                  >
+                    {isFocusPrepEnabled ? (
+                      <CircleIcon />
+                    ) : (
+                      <CircleOffIcon />
+                    )}
+                  </button>
                   <button
                     type="button"
                     aria-label={
@@ -887,9 +1159,22 @@ export default function PlasticityPage() {
 
         {phase === "recovery" && selectedActivity && (
           <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
-              Recovery
-            </p>
+            <div className="flex items-start justify-between gap-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                Recovery
+              </p>
+              {selectedActivity.hasRecoveryTimer && (
+                <button
+                  type="button"
+                  aria-label="Recovery-Einstellungen oeffnen"
+                  title="Recovery-Einstellungen"
+                  onClick={() => setShowRecoverySettings(true)}
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                >
+                  <SettingsIcon />
+                </button>
+              )}
+            </div>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight">
               {selectedActivity.prompt}
             </h2>
@@ -899,68 +1184,9 @@ export default function PlasticityPage() {
                 <p className="mt-8 text-center text-6xl font-semibold tabular-nums tracking-tight">
                   {formattedRecoveryTime}
                 </p>
-
-                <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 p-4">
-                  <p className="text-sm font-medium text-zinc-700">
-                    Recovery-Timer
-                  </p>
-                  <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-                    <label className="block text-sm font-medium text-zinc-700">
-                      Minuten
-                      <input
-                        type="number"
-                        min={0}
-                        max={120}
-                        value={recoveryMinutes}
-                        onChange={(event) =>
-                          setRecoveryMinutes(event.target.value)
-                        }
-                        className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-                      />
-                    </label>
-
-                    <label className="block text-sm font-medium text-zinc-700">
-                      Sekunden
-                      <input
-                        type="number"
-                        min={0}
-                        max={59}
-                        value={recoverySeconds}
-                        onChange={(event) =>
-                          setRecoverySeconds(event.target.value)
-                        }
-                        className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={applyRecoveryDuration}
-                      className="flex h-11 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
-                    >
-                      Uebernehmen
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={toggleRecoveryTimer}
-                    className="flex h-11 flex-1 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
-                  >
-                    {isRecoveryRunning ? "Pause" : "Start"}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Recovery-Timer zuruecksetzen"
-                    title="Reset"
-                    onClick={() => setRecoveryDuration(recoveryDurationSeconds)}
-                    className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-                  >
-                    <ResetIcon />
-                  </button>
-                </div>
+                <p className="mt-4 text-center text-sm font-medium text-zinc-500">
+                  {isRecoveryRunning ? "Laeuft" : "Pausiert"}
+                </p>
               </>
             ) : (
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -988,7 +1214,14 @@ export default function PlasticityPage() {
       </section>
 
       {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowSettings(false);
+            }
+          }}
+        >
           <div
             role="dialog"
             aria-modal="true"
@@ -1020,7 +1253,6 @@ export default function PlasticityPage() {
                     type="button"
                     onClick={() => {
                       selectDuration(option * 60);
-                      setShowSettings(false);
                     }}
                     className={`h-10 rounded-md border px-3 text-sm font-semibold transition ${
                       durationSeconds === option * 60
@@ -1038,28 +1270,17 @@ export default function PlasticityPage() {
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
                 Custom-Zeit
               </p>
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
                 <label className="block text-sm font-medium text-zinc-700">
-                  Minuten
+                  Minuten: {customMinutes}
                   <input
-                    type="number"
-                    min={0}
+                    type="range"
+                    min={5}
                     max={120}
+                    step={5}
                     value={customMinutes}
                     onChange={(event) => setCustomMinutes(event.target.value)}
-                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-                  />
-                </label>
-
-                <label className="block text-sm font-medium text-zinc-700">
-                  Sekunden
-                  <input
-                    type="number"
-                    min={0}
-                    max={59}
-                    value={customSeconds}
-                    onChange={(event) => setCustomSeconds(event.target.value)}
-                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                    className="mt-3 w-full accent-zinc-950"
                   />
                 </label>
 
@@ -1073,27 +1294,127 @@ export default function PlasticityPage() {
               </div>
             </div>
 
+            <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Priming
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <label className="block text-sm font-medium text-zinc-700">
+                  Sekunden: {focusPrepInputSeconds}
+                  <input
+                    type="range"
+                    min={15}
+                    max={60}
+                    step={15}
+                    value={focusPrepInputSeconds}
+                    onChange={(event) =>
+                      setFocusPrepInputSeconds(event.target.value)
+                    }
+                    className="mt-3 w-full accent-zinc-950"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={applyFocusPrepDuration}
+                  className="flex h-11 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+                >
+                  Uebernehmen
+                </button>
+              </div>
+            </div>
+
             <div className="mt-6">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                Aktivitaeten
+                Recovery Tools
               </p>
 
-              <div className="mt-3 space-y-3">
+              <div className="mt-3 grid grid-cols-3 gap-3">
                 {ACTIVITIES.map((activity) => (
-                  <label
+                  <button
                     key={activity.id}
-                    className="flex items-center justify-between gap-4 rounded-md border border-zinc-200 px-4 py-3 text-sm font-medium text-zinc-800"
+                    type="button"
+                    aria-label={activity.label}
+                    title={activity.label}
+                    onClick={() => toggleActivity(activity.id)}
+                    className={`flex h-20 items-center justify-center rounded-md border transition ${
+                      allowedActivities[activity.id]
+                        ? "border-zinc-950 bg-white text-zinc-950"
+                        : "border-zinc-200 bg-zinc-100 text-zinc-400 hover:border-zinc-400"
+                    }`}
                   >
-                    {activity.label}
-                    <input
-                      type="checkbox"
-                      checked={allowedActivities[activity.id]}
-                      onChange={() => toggleActivity(activity.id)}
-                      className="h-5 w-5 accent-zinc-950"
-                    />
-                  </label>
+                    {activity.id === "yoga-nidra" && <YogaNidraIcon />}
+                    {activity.id === "meditation" && <MeditationIcon />}
+                    {activity.id === "walk" && <NatureWalkIcon />}
+                  </button>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRecoverySettings && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowRecoverySettings(false);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-md rounded-lg bg-white p-6 text-zinc-950 shadow-xl"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-xl font-semibold tracking-tight">
+                Recovery-Timer
+              </h2>
+              <button
+                type="button"
+                aria-label="Recovery-Einstellungen schliessen"
+                title="Schliessen"
+                onClick={() => setShowRecoverySettings(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              <label className="block text-sm font-medium text-zinc-700">
+                Minuten
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={recoveryMinutes}
+                  onChange={(event) => setRecoveryMinutes(event.target.value)}
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-zinc-700">
+                Sekunden
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={recoverySeconds}
+                  onChange={(event) => setRecoverySeconds(event.target.value)}
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={applyRecoveryDuration}
+                className="flex h-11 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+              >
+                Uebernehmen
+              </button>
             </div>
           </div>
         </div>
@@ -1224,6 +1545,153 @@ function clearActiveTimerSession() {
   window.localStorage.removeItem(ACTIVE_TIMER_STORAGE_KEY);
 }
 
+type PlasticitySettings = {
+  defaultDurationSeconds: number;
+  isFocusPrepEnabled: boolean;
+};
+
+function readPlasticitySettings(): PlasticitySettings {
+  if (typeof window === "undefined") {
+    return {
+      defaultDurationSeconds: 30 * 60,
+      isFocusPrepEnabled: true,
+    };
+  }
+
+  const rawSettings = window.localStorage.getItem(
+    PLASTICITY_SETTINGS_STORAGE_KEY,
+  );
+
+  if (!rawSettings) {
+    return {
+      defaultDurationSeconds: 30 * 60,
+      isFocusPrepEnabled: true,
+    };
+  }
+
+  try {
+    const parsedSettings = JSON.parse(rawSettings);
+    const durationSeconds = parsedSettings?.defaultDurationSeconds;
+    const isFocusPrepEnabled = parsedSettings?.isFocusPrepEnabled;
+
+    return {
+      defaultDurationSeconds:
+        typeof durationSeconds === "number" && Number.isFinite(durationSeconds)
+          ? Math.min(MAX_DURATION_SECONDS, Math.max(1, durationSeconds))
+          : 30 * 60,
+      isFocusPrepEnabled:
+        typeof isFocusPrepEnabled === "boolean" ? isFocusPrepEnabled : true,
+    };
+  } catch {
+    return {
+      defaultDurationSeconds: 30 * 60,
+      isFocusPrepEnabled: true,
+    };
+  }
+}
+
+function savePlasticitySettings(settings: PlasticitySettings) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    PLASTICITY_SETTINGS_STORAGE_KEY,
+    JSON.stringify({
+      defaultDurationSeconds: Math.min(
+        MAX_DURATION_SECONDS,
+        Math.max(1, settings.defaultDurationSeconds),
+      ),
+      isFocusPrepEnabled: settings.isFocusPrepEnabled,
+    }),
+  );
+}
+
+function readFocusPrepDurationSeconds() {
+  if (typeof window === "undefined") {
+    return 45;
+  }
+
+  const rawSettings = window.localStorage.getItem(
+    FOCUS_PREP_SETTINGS_STORAGE_KEY,
+  );
+
+  if (!rawSettings) {
+    return 45;
+  }
+
+  try {
+    const parsedSettings = JSON.parse(rawSettings);
+    const durationSeconds = parsedSettings?.durationSeconds;
+
+    if (
+      typeof durationSeconds !== "number" ||
+      !Number.isFinite(durationSeconds)
+    ) {
+      return 45;
+    }
+
+    return Math.min(MAX_DURATION_SECONDS, Math.max(1, durationSeconds));
+  } catch {
+    return 45;
+  }
+}
+
+function saveFocusPrepDurationSeconds(durationSeconds: number) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    FOCUS_PREP_SETTINGS_STORAGE_KEY,
+    JSON.stringify({
+      durationSeconds: Math.min(
+        MAX_DURATION_SECONDS,
+        Math.max(1, durationSeconds),
+      ),
+    }),
+  );
+}
+
+function readActiveFocusPrepSession() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawSession = window.localStorage.getItem(ACTIVE_FOCUS_PREP_STORAGE_KEY);
+
+  if (!rawSession) {
+    return null;
+  }
+
+  try {
+    const parsedSession = JSON.parse(rawSession);
+    return isActiveFocusPrepSession(parsedSession) ? parsedSession : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveFocusPrepSession(session: ActiveFocusPrepSession) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  saveFocusPrepDurationSeconds(session.durationSeconds);
+  window.localStorage.setItem(
+    ACTIVE_FOCUS_PREP_STORAGE_KEY,
+    JSON.stringify(session),
+  );
+}
+
+function clearActiveFocusPrepSession() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(ACTIVE_FOCUS_PREP_STORAGE_KEY);
+}
+
 function isActiveTimerSession(value: unknown): value is ActiveTimerSession {
   if (!value || typeof value !== "object") {
     return false;
@@ -1250,6 +1718,25 @@ function isActiveTimerSession(value: unknown): value is ActiveTimerSession {
   );
 }
 
+function isActiveFocusPrepSession(
+  value: unknown,
+): value is ActiveFocusPrepSession {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const session = value as Partial<ActiveFocusPrepSession>;
+
+  return (
+    typeof session.durationSeconds === "number" &&
+    typeof session.sessionDurationSeconds === "number" &&
+    typeof session.endAt === "number" &&
+    typeof session.timerName === "string" &&
+    (typeof session.taskId === "string" || session.taskId === null) &&
+    (typeof session.taskTitle === "string" || session.taskTitle === null)
+  );
+}
+
 function SettingsIcon() {
   return (
     <svg
@@ -1264,6 +1751,103 @@ function SettingsIcon() {
     >
       <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
       <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 1 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.09 1.65V21.3a2.1 2.1 0 1 1-4.2 0v-.07a1.8 1.8 0 0 0-1.09-1.65 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 1 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 3.84 15a1.8 1.8 0 0 0-1.65-1.09H2.1a2.1 2.1 0 1 1 0-4.2h.09a1.8 1.8 0 0 0 1.65-1.09 1.8 1.8 0 0 0-.36-1.98l-.05-.05a2.1 2.1 0 1 1 2.97-2.97l.05.05a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.09-1.65V2.1a2.1 2.1 0 1 1 4.2 0v.09a1.8 1.8 0 0 0 1.09 1.65 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 1 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.09h.09a2.1 2.1 0 1 1 0 4.2h-.09A1.8 1.8 0 0 0 19.4 15Z" />
+    </svg>
+  );
+}
+
+function CircleIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="7" />
+    </svg>
+  );
+}
+
+function CircleOffIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="7" />
+      <path d="M5 19 19 5" />
+    </svg>
+  );
+}
+
+function YogaNidraIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-9 w-9"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 16h16" />
+      <path d="M7 16c1.5-4 8.5-4 10 0" />
+      <path d="M10 11.5h4" />
+      <path d="M12 5v3" />
+      <path d="M8.5 6.5 10 8" />
+      <path d="M15.5 6.5 14 8" />
+    </svg>
+  );
+}
+
+function MeditationIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-9 w-9"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="6" r="2" />
+      <path d="M12 8v5" />
+      <path d="M8 12h8" />
+      <path d="M7 18c2-2 8-2 10 0" />
+      <path d="M5 20h14" />
+    </svg>
+  );
+}
+
+function NatureWalkIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-9 w-9"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+    >
+      <path d="M6 20h12" />
+      <path d="M8 17c1.5-3 3-5 4-8" />
+      <path d="M12 9c2 2 3.5 4.5 4 8" />
+      <path d="M12 4v5" />
+      <path d="M9 7c-2.5-.5-3.5-2-4-4 2.5.4 4 1.6 4 4Z" />
+      <path d="M15 7c2.5-.5 3.5-2 4-4-2.5.4-4 1.6-4 4Z" />
     </svg>
   );
 }
