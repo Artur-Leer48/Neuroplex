@@ -7,10 +7,13 @@ import { AppHeader } from "@/app/app-header";
 import { hasDemoOrSupabaseSession } from "@/lib/demo-auth";
 import {
   createEisenhowerTodo,
+  getDefaultColorForType,
   readEisenhowerTodos,
   writeEisenhowerTodos,
   type EisenhowerQuadrant,
   type EisenhowerTodo,
+  type WorkItemColor,
+  type WorkItemType,
 } from "@/lib/eisenhower-todos";
 import { setCurrentTask } from "@/lib/current-task";
 import { setPendingFocusSession } from "@/lib/focus-session";
@@ -21,6 +24,15 @@ const INFO_STORAGE_KEY = "neuroplex:eisenhower-info-seen";
 const FOCUS_OPTIONS = [15, 30, 45, 60, 90];
 const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
 const TIMER_WIDGET_STORAGE_KEY = "neuroplex:eisenhower-timer-widget";
+const WORK_ITEM_TYPES: WorkItemType[] = ["Projekt", "Wiederholung", "Sprint"];
+const WORK_ITEM_COLORS: WorkItemColor[] = [
+  "emerald",
+  "sky",
+  "amber",
+  "rose",
+  "violet",
+  "zinc",
+];
 
 type TimerWidgetPosition = "top" | "right" | "bottom" | "left";
 
@@ -71,6 +83,10 @@ export default function EisenhowerPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [todos, setTodos] = useState<EisenhowerTodo[]>([]);
   const [title, setTitle] = useState("");
+  const [itemType, setItemType] = useState<WorkItemType>("Projekt");
+  const [itemColor, setItemColor] = useState<WorkItemColor>("emerald");
+  const [description, setDescription] = useState("");
+  const [subtaskDraft, setSubtaskDraft] = useState("");
   const [isUrgent, setIsUrgent] = useState(true);
   const [isImportant, setIsImportant] = useState(true);
   const [draggedTodoId, setDraggedTodoId] = useState<string | null>(null);
@@ -183,10 +199,19 @@ export default function EisenhowerPage() {
     }
 
     updateTodos([
-      createEisenhowerTodo(trimmedTitle, getQuadrant(isUrgent, isImportant)),
+      createEisenhowerTodo(
+        trimmedTitle,
+        getQuadrant(isUrgent, isImportant),
+        itemType,
+        itemColor,
+        description.trim(),
+        parseSubtasks(subtaskDraft),
+      ),
       ...todos,
     ]);
     setTitle("");
+    setDescription("");
+    setSubtaskDraft("");
   }
 
   function moveTodo(todoId: string, quadrant: EisenhowerQuadrant) {
@@ -210,9 +235,26 @@ export default function EisenhowerPage() {
       return;
     }
 
-    updateTodos([createEisenhowerTodo(trimmedTitle, quadrant), ...todos]);
+    updateTodos([
+      createEisenhowerTodo(
+        trimmedTitle,
+        quadrant,
+        itemType,
+        itemColor,
+        description.trim(),
+        parseSubtasks(subtaskDraft),
+      ),
+      ...todos,
+    ]);
     setTitle("");
+    setDescription("");
+    setSubtaskDraft("");
     setIsDraggingDraft(false);
+  }
+
+  function updateItemType(nextType: WorkItemType) {
+    setItemType(nextType);
+    setItemColor(getDefaultColorForType(nextType));
   }
 
   function toggleDone(todoId: string) {
@@ -323,6 +365,45 @@ export default function EisenhowerPage() {
               />
             </label>
 
+            <label className="block text-sm font-medium text-zinc-700">
+              Typ
+              <select
+                value={itemType}
+                onChange={(event) =>
+                  updateItemType(event.target.value as WorkItemType)
+                }
+                className="mt-2 h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm outline-none transition focus:border-zinc-950"
+              >
+                {WORK_ITEM_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div>
+              <p className="text-sm font-medium text-zinc-700">Farbe</p>
+              <div className="mt-2 flex h-10 items-center gap-2">
+                {WORK_ITEM_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    aria-label={`Farbe ${color}`}
+                    title={color}
+                    onClick={() => setItemColor(color)}
+                    className={`h-7 w-7 rounded-full border-2 ${getColorSwatchClass(
+                      color,
+                    )} ${
+                      itemColor === color
+                        ? "border-zinc-950"
+                        : "border-transparent"
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+
             <label className="flex h-10 items-center gap-2 rounded-md border border-zinc-200 px-3 text-sm font-medium text-zinc-800">
               <input
                 type="checkbox"
@@ -349,6 +430,28 @@ export default function EisenhowerPage() {
             >
               Erstellen
             </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="block text-sm font-medium text-zinc-700">
+              Beschreibung
+              <input
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="Kurze Projektbeschreibung"
+                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              />
+            </label>
+
+            <label className="block text-sm font-medium text-zinc-700">
+              Unteraufgaben
+              <input
+                value={subtaskDraft}
+                onChange={(event) => setSubtaskDraft(event.target.value)}
+                placeholder="Checkliste, getrennt mit Komma"
+                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              />
+            </label>
           </div>
         </form>
 
@@ -442,9 +545,23 @@ export default function EisenhowerPage() {
                           y: event.clientY,
                         });
                       }}
-                      className="block w-full cursor-grab rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3 text-left text-sm font-medium text-zinc-900 transition hover:border-zinc-300 active:cursor-grabbing"
+                      title={getTodoTooltip(todo)}
+                      className={`block w-full cursor-grab rounded-md border px-3 py-3 text-left text-sm font-medium transition active:cursor-grabbing ${getTodoColorClass(
+                        todo.color,
+                      )}`}
                     >
-                      {todo.title}
+                      <span className="flex items-center justify-between gap-3">
+                        <span className="truncate">{todo.title}</span>
+                        <span className="shrink-0 rounded bg-white/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]">
+                          {todo.itemType}
+                        </span>
+                      </span>
+                      {todo.subtasks.length > 0 && (
+                        <span className="mt-2 block text-xs font-medium opacity-80">
+                          {todo.subtasks.filter((subtask) => subtask.isDone).length}/
+                          {todo.subtasks.length} erledigt
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -662,6 +779,81 @@ function getQuadrant(isUrgent: boolean, isImportant: boolean) {
   }
 
   return "not-urgent-not-important";
+}
+
+function parseSubtasks(value: string) {
+  return value
+    .split(",")
+    .map((title) => title.trim())
+    .filter(Boolean)
+    .map((title) => ({
+      id: crypto.randomUUID(),
+      title,
+      isDone: false,
+    }));
+}
+
+function getTodoTooltip(todo: EisenhowerTodo) {
+  const subtasks = todo.subtasks
+    .slice(0, 4)
+    .map((subtask) => `${subtask.isDone ? "[x]" : "[ ]"} ${subtask.title}`)
+    .join("\n");
+
+  return [
+    `${todo.itemType}: ${todo.title}`,
+    todo.description,
+    subtasks ? `Checkliste:\n${subtasks}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function getTodoColorClass(color: WorkItemColor) {
+  if (color === "sky") {
+    return "border-sky-200 bg-sky-50 text-sky-950 hover:border-sky-400";
+  }
+
+  if (color === "emerald") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-950 hover:border-emerald-400";
+  }
+
+  if (color === "amber") {
+    return "border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-400";
+  }
+
+  if (color === "rose") {
+    return "border-rose-200 bg-rose-50 text-rose-950 hover:border-rose-400";
+  }
+
+  if (color === "violet") {
+    return "border-violet-200 bg-violet-50 text-violet-950 hover:border-violet-400";
+  }
+
+  return "border-zinc-200 bg-zinc-50 text-zinc-900 hover:border-zinc-300";
+}
+
+function getColorSwatchClass(color: WorkItemColor) {
+  if (color === "sky") {
+    return "bg-sky-400";
+  }
+
+  if (color === "emerald") {
+    return "bg-emerald-400";
+  }
+
+  if (color === "amber") {
+    return "bg-amber-400";
+  }
+
+  if (color === "rose") {
+    return "bg-rose-400";
+  }
+
+  if (color === "violet") {
+    return "bg-violet-400";
+  }
+
+  return "bg-zinc-400";
 }
 
 function readActiveTimerSession() {

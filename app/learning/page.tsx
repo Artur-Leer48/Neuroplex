@@ -10,6 +10,7 @@ import {
   getClampedReviewRepetitionCount,
   getTopicReviewState,
   readLearningTopics,
+  toDateInputValue,
   writeLearningTopics,
   type LearningResource,
   type LearningResourceDraft,
@@ -58,8 +59,31 @@ export default function LearningPage() {
       }
 
       const savedTopics = readLearningTopics();
-      setTopics(savedTopics);
-      setSelectedTopicId(savedTopics[0]?.id ?? null);
+      const params = new URLSearchParams(window.location.search);
+      const today = toDateInputValue(new Date());
+      const shouldSeedDueReview = params.get("seed") === "due-review";
+      const hasSeedTopic = savedTopics.some(
+        (topic) =>
+          topic.title === "Test Review Heute" &&
+          topic.schedule.nextReviewDate === today,
+      );
+      const nextTopics =
+        shouldSeedDueReview && !hasSeedTopic
+          ? [createDueReviewSeedTopic(today), ...savedTopics]
+          : savedTopics;
+
+      setTopics(nextTopics);
+      setSelectedTopicId(nextTopics[0]?.id ?? null);
+
+      if (shouldSeedDueReview) {
+        setCalendarDate(parseDateInputValue(today));
+        setMessage(
+          hasSeedTopic
+            ? "Test-Review fuer heute ist bereits vorhanden."
+            : "Test-Review fuer heute angelegt.",
+        );
+      }
+
       setIsLoading(false);
     }
 
@@ -353,6 +377,36 @@ function formatDisplayDate(value: string) {
     month: "2-digit",
     year: "numeric",
   });
+}
+
+function createDueReviewSeedTopic(today: string): LearningTopic {
+  const now = new Date().toISOString();
+  const topicId = crypto.randomUUID();
+
+  return {
+    id: topicId,
+    title: "Test Review Heute",
+    description: "Testthema fuer die Plasticity Review-Vorschau.",
+    tags: ["test"],
+    goal: "Verstehen",
+    startDate: today,
+    deadline: null,
+    resources: [],
+    reviewHistory: [],
+    schedule: {
+      topicId,
+      currentIntervalIndex: 0,
+      nextReviewDate: today,
+      isCompleted: false,
+    },
+    reviewRepetitionCount: 6,
+    recallQuestions: [
+      "Was ist die Kernidee?",
+      "Was kannst du ohne Notizen wiedergeben?",
+    ],
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 async function uploadLearningResourceFile(

@@ -15,6 +15,12 @@ import {
   type EisenhowerTodo,
 } from "@/lib/eisenhower-todos";
 import { consumePendingFocusSession } from "@/lib/focus-session";
+import {
+  getProjectedReviews,
+  readLearningTopics,
+  type LearningTopic,
+  type ProjectedReview,
+} from "@/lib/learning";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { recordPlasticityStat } from "@/lib/plasticity-stats";
 import { getScopedStorageKey } from "@/lib/scoped-storage";
@@ -133,8 +139,13 @@ export default function PlasticityPage() {
     useState(30);
   const [isFocusPrepEnabled, setIsFocusPrepEnabled] = useState(true);
   const [timerName, setTimerName] = useState("Plasticity");
+  const [showProjectSuggestions, setShowProjectSuggestions] = useState(false);
+  const [showSettingsProjectSuggestions, setShowSettingsProjectSuggestions] =
+    useState(false);
   const [mainView, setMainView] = useState<"timer" | "eisenhower">("timer");
   const [eisenhowerTodos, setEisenhowerTodos] = useState<EisenhowerTodo[]>([]);
+  const [learningTopics, setLearningTopics] = useState<LearningTopic[]>([]);
+  const [isReviewCalendarVisible, setIsReviewCalendarVisible] = useState(false);
   const [customMinutes, setCustomMinutes] = useState("0");
   const [isRunning, setIsRunning] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState<Activity | null>(
@@ -173,6 +184,47 @@ export default function PlasticityPage() {
   const activeEisenhowerTodos = useMemo(
     () => eisenhowerTodos.filter((todo) => !todo.isDone),
     [eisenhowerTodos],
+  );
+  const projectSuggestions = useMemo(() => {
+    const normalizedQuery = timerName.trim().toLowerCase();
+    const seenProjects = new Set<string>();
+
+    return eisenhowerTodos
+      .filter((todo) =>
+        normalizedQuery
+          ? todo.title.toLowerCase().includes(normalizedQuery)
+          : true,
+      )
+      .sort((firstTodo, secondTodo) => {
+        const firstDate = firstTodo.completedAt ?? firstTodo.createdAt;
+        const secondDate = secondTodo.completedAt ?? secondTodo.createdAt;
+
+        return new Date(secondDate).getTime() - new Date(firstDate).getTime();
+      })
+      .filter((todo) => {
+        const projectKey = todo.title.trim().toLowerCase();
+
+        if (!projectKey || seenProjects.has(projectKey)) {
+          return false;
+        }
+
+        seenProjects.add(projectKey);
+        return true;
+      })
+      .slice(0, 6);
+  }, [eisenhowerTodos, timerName]);
+  const upcomingReviews = useMemo(
+    () => {
+      const today = toDateKey(new Date());
+
+      return learningTopics
+        .flatMap((topic) => getProjectedReviews(topic))
+        .filter((review) => !review.isCompleted && review.date <= today)
+        .sort((firstReview, secondReview) =>
+          firstReview.date.localeCompare(secondReview.date),
+        );
+    },
+    [learningTopics],
   );
 
   const resetFlow = useCallback((nextMessage?: string) => {
@@ -318,6 +370,7 @@ export default function PlasticityPage() {
       }
 
       setEisenhowerTodos(readEisenhowerTodos());
+      setLearningTopics(readLearningTopics());
       const savedPlasticitySettings = readPlasticitySettings();
       const savedDefaultDurationSeconds =
         savedPlasticitySettings.defaultDurationSeconds;
@@ -325,6 +378,9 @@ export default function PlasticityPage() {
       setRemainingSeconds(savedDefaultDurationSeconds);
       setCustomMinutes(String(Math.round(savedDefaultDurationSeconds / 60)));
       setIsFocusPrepEnabled(savedPlasticitySettings.isFocusPrepEnabled);
+      setIsReviewCalendarVisible(
+        savedPlasticitySettings.isReviewCalendarVisible,
+      );
       const savedFocusPrepSeconds = readFocusPrepDurationSeconds();
       setFocusPrepDurationSeconds(savedFocusPrepSeconds);
       setFocusPrepInputSeconds(String(savedFocusPrepSeconds));
@@ -765,6 +821,12 @@ export default function PlasticityPage() {
 
   function updateTimerName(nextName: string) {
     setTimerName(nextName);
+    activeTaskRef.current = nextName.trim()
+      ? {
+          id: null,
+          title: nextName.trim(),
+        }
+      : null;
 
     const activeTimerSession = readActiveTimerSession();
 
@@ -775,16 +837,51 @@ export default function PlasticityPage() {
     saveActiveTimerSession({
       ...activeTimerSession,
       timerName: nextName.trim() || "Plasticity",
+      taskId: activeTaskRef.current?.id ?? null,
+      taskTitle: activeTaskRef.current?.title ?? null,
     });
+  }
+
+  function selectProject(todo: EisenhowerTodo) {
+    activeTaskRef.current = {
+      id: todo.id,
+      title: todo.title,
+    };
+    setTimerName(todo.title);
+    setShowProjectSuggestions(false);
+    setShowSettingsProjectSuggestions(false);
+    setMessage(null);
+  }
+
+  function selectReviewProject(review: ProjectedReview) {
+    activeTaskRef.current = {
+      id: review.topicId,
+      title: review.topicTitle,
+    };
+    setTimerName(review.topicTitle);
+    setMessage(null);
   }
 
   function selectDuration(secondsToSelect: number) {
     clearActiveTimerSession();
+    clearActiveFocusPrepSession();
     plasticityEndAtRef.current = null;
+    focusPrepEndAtRef.current = null;
     setDurationSeconds(secondsToSelect);
     setRemainingSeconds(secondsToSelect);
+    setIsFocusPrepActive(false);
     setIsRunning(false);
     setMessage(null);
+  }
+
+  function selectPresetDuration(secondsToSelect: number) {
+    selectDuration(secondsToSelect);
+    savePlasticitySettings({
+      defaultDurationSeconds: secondsToSelect,
+      isFocusPrepEnabled,
+      isReviewCalendarVisible,
+    });
+    setCustomMinutes(String(Math.floor(secondsToSelect / 60)));
   }
 
   function applyCustomDuration() {
@@ -797,6 +894,7 @@ export default function PlasticityPage() {
     savePlasticitySettings({
       defaultDurationSeconds: nextDurationSeconds,
       isFocusPrepEnabled,
+      isReviewCalendarVisible,
     });
     setCustomMinutes(String(Math.floor(nextDurationSeconds / 60)));
   }
@@ -870,6 +968,19 @@ export default function PlasticityPage() {
       savePlasticitySettings({
         defaultDurationSeconds: durationSeconds,
         isFocusPrepEnabled: nextValue,
+        isReviewCalendarVisible,
+      });
+      return nextValue;
+    });
+  }
+
+  function toggleReviewCalendarVisible() {
+    setIsReviewCalendarVisible((currentValue) => {
+      const nextValue = !currentValue;
+      savePlasticitySettings({
+        defaultDurationSeconds: durationSeconds,
+        isFocusPrepEnabled,
+        isReviewCalendarVisible: nextValue,
       });
       return nextValue;
     });
@@ -882,22 +993,17 @@ export default function PlasticityPage() {
       return;
     }
 
-    const currentTask = readCurrentTask();
-    const nextTimerName = currentTask?.title ?? timerName;
-
-    if (currentTask) {
-      activeTaskRef.current = {
-        id: currentTask.id,
-        title: currentTask.title,
-      };
-      setTimerName(currentTask.title);
-    }
+    const trimmedTimerName = timerName.trim() || "Plasticity";
+    activeTaskRef.current = activeTaskRef.current ?? {
+      id: null,
+      title: trimmedTimerName,
+    };
 
     setMessage(null);
     setMessageTone("praise");
 
     if (isFocusPrepEnabled) {
-      startFocusPrep(durationSeconds, nextTimerName);
+      startFocusPrep(durationSeconds, trimmedTimerName);
       return;
     }
 
@@ -1006,12 +1112,12 @@ export default function PlasticityPage() {
                     aria-label={
                       mainView === "timer"
                         ? "Matrix anzeigen"
-                        : "Timer anzeigen"
+                        : "Matrix ausblenden"
                     }
                     title={
                       mainView === "timer"
                         ? "Matrix anzeigen"
-                        : "Timer anzeigen"
+                        : "Matrix ausblenden"
                     }
                     onClick={() =>
                       setMainView(mainView === "timer" ? "eisenhower" : "timer")
@@ -1032,45 +1138,87 @@ export default function PlasticityPage() {
                 </div>
               </div>
 
-              <label className="mt-5 block text-sm font-medium text-zinc-700">
-                Timer-Name
-                <input
-                  value={timerName}
-                  onChange={(event) => updateTimerName(event.target.value)}
-                  placeholder="Timer benennen"
-                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              <div className="relative mt-5">
+                <label className="block text-sm font-medium text-zinc-700">
+                  Projekt
+                  <input
+                    value={timerName}
+                    onChange={(event) => {
+                      updateTimerName(event.target.value);
+                      setShowProjectSuggestions(true);
+                    }}
+                    onFocus={() => setShowProjectSuggestions(true)}
+                    onBlur={() => {
+                      window.setTimeout(() => {
+                        setShowProjectSuggestions(false);
+                      }, 120);
+                    }}
+                    placeholder="Projekt suchen oder benennen"
+                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                  />
+                </label>
+
+                {showProjectSuggestions && projectSuggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg">
+                    {projectSuggestions.map((todo) => (
+                      <button
+                        key={todo.id}
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectProject(todo)}
+                        className="flex w-full items-center justify-between gap-3 border-b border-zinc-100 px-3 py-2 text-left text-sm transition last:border-b-0 hover:bg-zinc-50"
+                      >
+                        <span className="truncate font-medium text-zinc-900">
+                          {todo.title}
+                        </span>
+                        <span
+                          className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${getMiniTypeBadgeClass(
+                            todo.color,
+                          )}`}
+                        >
+                          {todo.itemType}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {isReviewCalendarVisible && (
+                <PlasticityReviewCalendarPreview
+                  reviews={upcomingReviews}
+                  selectedProjectTitle={timerName}
+                  onSelectReview={selectReviewProject}
                 />
-              </label>
+              )}
 
-              {mainView === "timer" ? (
-                <>
-                  <div className="mt-5 rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-8 text-center">
-                    <p className="text-6xl font-semibold tabular-nums tracking-tight text-zinc-950 sm:text-7xl">
-                      {formattedTime}
-                    </p>
-                  </div>
+              <div className="mt-5 rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-8 text-center">
+                <p className="text-6xl font-semibold tabular-nums tracking-tight text-zinc-950 sm:text-7xl">
+                  {formattedTime}
+                </p>
+              </div>
 
-                  <div className="mt-5 flex items-center justify-center gap-3">
-                    <button
-                      type="button"
-                      onClick={isRunning ? pauseTimer : startTimer}
-                      disabled={selectedActivityCount === 0}
-                      className="flex h-10 min-w-32 items-center justify-center rounded-md bg-zinc-950 px-5 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
-                    >
-                      {isRunning ? "Pause" : "Start"}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Timer zuruecksetzen"
-                      title="Reset"
-                      onClick={resetTimer}
-                      className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-                    >
-                      <ResetIcon />
-                    </button>
-                  </div>
-                </>
-              ) : (
+              <div className="mt-5 flex items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={isRunning ? pauseTimer : startTimer}
+                  disabled={selectedActivityCount === 0}
+                  className="flex h-10 min-w-32 items-center justify-center rounded-md bg-zinc-950 px-5 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
+                >
+                  {isRunning ? "Pause" : "Start"}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Timer zuruecksetzen"
+                  title="Reset"
+                  onClick={resetTimer}
+                  className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                >
+                  <ResetIcon />
+                </button>
+              </div>
+
+              {mainView === "eisenhower" && (
                 <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
@@ -1106,12 +1254,19 @@ export default function PlasticityPage() {
                             </p>
                             <div className="mt-2 space-y-1">
                               {quadrantTodos.slice(0, 3).map((todo) => (
-                                <p
+                                <button
                                   key={todo.id}
-                                  className="truncate rounded border border-zinc-100 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-800"
+                                  type="button"
+                                  onClick={() => selectProject(todo)}
+                                  className={`block w-full truncate rounded border px-2 py-1 text-left text-xs font-medium transition ${
+                                    timerName.trim() === todo.title
+                                      ? "border-zinc-950 bg-zinc-950 text-white"
+                                      : getMiniTodoColorClass(todo.color)
+                                  }`}
+                                  title={getMiniTodoTooltip(todo)}
                                 >
-                                  {todo.title}
-                                </p>
+                                  {todo.title} · {todo.itemType}
+                                </button>
                               ))}
                             </div>
                           </div>
@@ -1212,6 +1367,82 @@ export default function PlasticityPage() {
 
             <div className="mt-6">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Projekt
+              </p>
+              <div className="relative mt-3">
+                <input
+                  value={timerName}
+                  onChange={(event) => {
+                    updateTimerName(event.target.value);
+                    setShowSettingsProjectSuggestions(true);
+                  }}
+                  onFocus={() => setShowSettingsProjectSuggestions(true)}
+                  onBlur={() => {
+                    window.setTimeout(() => {
+                      setShowSettingsProjectSuggestions(false);
+                    }, 120);
+                  }}
+                  placeholder="Projekt suchen oder benennen"
+                  className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+
+                {showSettingsProjectSuggestions &&
+                  projectSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg">
+                      {projectSuggestions.map((todo) => (
+                        <button
+                          key={todo.id}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => selectProject(todo)}
+                          className="flex w-full items-center justify-between gap-3 border-b border-zinc-100 px-3 py-2 text-left text-sm transition last:border-b-0 hover:bg-zinc-50"
+                        >
+                          <span className="truncate font-medium text-zinc-900">
+                            {todo.title}
+                          </span>
+                          <span
+                            className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${getMiniTypeBadgeClass(
+                              todo.color,
+                            )}`}
+                          >
+                            {todo.itemType}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                    Spaced Repetition
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-zinc-700">
+                    Kalender im Haupttimer anzeigen
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-pressed={isReviewCalendarVisible}
+                  onClick={toggleReviewCalendarVisible}
+                  className={`relative h-7 w-12 rounded-full transition ${
+                    isReviewCalendarVisible ? "bg-zinc-950" : "bg-zinc-300"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${
+                      isReviewCalendarVisible ? "left-6" : "left-1"
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
                 Timer-Presets
               </p>
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -1220,7 +1451,7 @@ export default function PlasticityPage() {
                     key={option}
                     type="button"
                     onClick={() => {
-                      selectDuration(option * 60);
+                      selectPresetDuration(option * 60);
                     }}
                     className={`h-10 rounded-md border px-3 text-sm font-semibold transition ${
                       durationSeconds === option * 60
@@ -1425,6 +1656,66 @@ export default function PlasticityPage() {
   );
 }
 
+function PlasticityReviewCalendarPreview({
+  reviews,
+  selectedProjectTitle,
+  onSelectReview,
+}: {
+  reviews: ProjectedReview[];
+  selectedProjectTitle: string;
+  onSelectReview: (review: ProjectedReview) => void;
+}) {
+  return (
+    <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+          Spaced Repetition
+        </p>
+        <span className="text-xs font-semibold text-zinc-500">
+          {reviews.length} Reviews
+        </span>
+      </div>
+
+      {reviews.length === 0 ? (
+        <p className="mt-3 text-sm text-zinc-600">
+          Heute sind keine Reviews faellig.
+        </p>
+      ) : (
+        <div className="mt-3 grid gap-2">
+          {reviews.map((review) => (
+            <button
+              key={`${review.topicId}-${review.sequence}-${review.date}`}
+              type="button"
+              onClick={() => onSelectReview(review)}
+              className={`grid grid-cols-[88px_1fr_auto] items-center gap-3 rounded-md border px-3 py-2 text-left text-sm transition ${
+                selectedProjectTitle.trim() === review.topicTitle
+                  ? "border-zinc-950 bg-zinc-950 text-white"
+                  : "border-zinc-200 bg-white hover:border-zinc-300"
+              }`}
+            >
+              <span
+                className={`font-semibold tabular-nums ${
+                  selectedProjectTitle.trim() === review.topicTitle
+                    ? "text-zinc-100"
+                    : "text-zinc-600"
+                }`}
+              >
+                {formatReviewDate(review.date)}
+              </span>
+              <span className="truncate font-medium">
+                {review.topicTitle}
+              </span>
+              <span className="rounded bg-sky-100 px-2 py-1 text-xs font-semibold text-sky-800">
+                {review.sequence}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function getClampedSeconds(minutes: string, seconds: string) {
   const minutesValue = Number(minutes);
   const secondsValue = Number(seconds);
@@ -1457,6 +1748,78 @@ function formatSeconds(totalSeconds: number) {
     2,
     "0",
   )}`;
+}
+
+function formatReviewDate(date: string) {
+  return new Date(`${date}T00:00:00`).toLocaleDateString("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
+function getMiniTodoTooltip(todo: EisenhowerTodo) {
+  const subtasks = todo.subtasks
+    .slice(0, 4)
+    .map((subtask) => `${subtask.isDone ? "[x]" : "[ ]"} ${subtask.title}`)
+    .join("\n");
+
+  return [todo.description, subtasks].filter(Boolean).join("\n\n");
+}
+
+function getMiniTodoColorClass(color: EisenhowerTodo["color"]) {
+  if (color === "sky") {
+    return "border-sky-200 bg-sky-50 text-sky-950 hover:border-sky-400";
+  }
+
+  if (color === "emerald") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-950 hover:border-emerald-400";
+  }
+
+  if (color === "amber") {
+    return "border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-400";
+  }
+
+  if (color === "rose") {
+    return "border-rose-200 bg-rose-50 text-rose-950 hover:border-rose-400";
+  }
+
+  if (color === "violet") {
+    return "border-violet-200 bg-violet-50 text-violet-950 hover:border-violet-400";
+  }
+
+  return "border-zinc-100 bg-zinc-50 text-zinc-800 hover:border-zinc-300";
+}
+
+function getMiniTypeBadgeClass(color: EisenhowerTodo["color"]) {
+  if (color === "sky") {
+    return "bg-sky-100 text-sky-800";
+  }
+
+  if (color === "emerald") {
+    return "bg-emerald-100 text-emerald-800";
+  }
+
+  if (color === "amber") {
+    return "bg-amber-100 text-amber-800";
+  }
+
+  if (color === "rose") {
+    return "bg-rose-100 text-rose-800";
+  }
+
+  if (color === "violet") {
+    return "bg-violet-100 text-violet-800";
+  }
+
+  return "bg-zinc-100 text-zinc-700";
+}
+
+function toDateKey(date: Date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
 }
 
 function isTypingTarget(target: EventTarget | null) {
@@ -1518,6 +1881,7 @@ function clearActiveTimerSession() {
 type PlasticitySettings = {
   defaultDurationSeconds: number;
   isFocusPrepEnabled: boolean;
+  isReviewCalendarVisible: boolean;
 };
 
 function readPlasticitySettings(): PlasticitySettings {
@@ -1525,6 +1889,7 @@ function readPlasticitySettings(): PlasticitySettings {
     return {
       defaultDurationSeconds: 30 * 60,
       isFocusPrepEnabled: true,
+      isReviewCalendarVisible: false,
     };
   }
 
@@ -1536,6 +1901,7 @@ function readPlasticitySettings(): PlasticitySettings {
     return {
       defaultDurationSeconds: 30 * 60,
       isFocusPrepEnabled: true,
+      isReviewCalendarVisible: false,
     };
   }
 
@@ -1543,6 +1909,7 @@ function readPlasticitySettings(): PlasticitySettings {
     const parsedSettings = JSON.parse(rawSettings);
     const durationSeconds = parsedSettings?.defaultDurationSeconds;
     const isFocusPrepEnabled = parsedSettings?.isFocusPrepEnabled;
+    const isReviewCalendarVisible = parsedSettings?.isReviewCalendarVisible;
 
     return {
       defaultDurationSeconds:
@@ -1551,11 +1918,16 @@ function readPlasticitySettings(): PlasticitySettings {
           : 30 * 60,
       isFocusPrepEnabled:
         typeof isFocusPrepEnabled === "boolean" ? isFocusPrepEnabled : true,
+      isReviewCalendarVisible:
+        typeof isReviewCalendarVisible === "boolean"
+          ? isReviewCalendarVisible
+          : false,
     };
   } catch {
     return {
       defaultDurationSeconds: 30 * 60,
       isFocusPrepEnabled: true,
+      isReviewCalendarVisible: false,
     };
   }
 }
@@ -1573,6 +1945,7 @@ function savePlasticitySettings(settings: PlasticitySettings) {
         Math.max(1, settings.defaultDurationSeconds),
       ),
       isFocusPrepEnabled: settings.isFocusPrepEnabled,
+      isReviewCalendarVisible: settings.isReviewCalendarVisible,
     }),
   );
 }
