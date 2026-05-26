@@ -25,7 +25,14 @@ import { supabaseBrowser } from "@/lib/supabase-browser";
 import { recordPlasticityStat } from "@/lib/plasticity-stats";
 import { getScopedStorageKey } from "@/lib/scoped-storage";
 
-const TIMER_OPTIONS = [30, 45, 60, 75, 90];
+const TIMER_OPTIONS = [
+  { label: "1s", seconds: 1 },
+  { label: "30m", seconds: 30 * 60 },
+  { label: "45m", seconds: 45 * 60 },
+  { label: "60m", seconds: 60 * 60 },
+  { label: "75m", seconds: 75 * 60 },
+  { label: "90m", seconds: 90 * 60 },
+];
 const MAX_DURATION_SECONDS = 2 * 60 * 60;
 const DOUBLE_SPACE_DELAY_MS = 350;
 const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
@@ -1447,21 +1454,21 @@ export default function PlasticityPage() {
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
                 Timer-Presets
               </p>
-              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-6">
                 {TIMER_OPTIONS.map((option) => (
                   <button
-                    key={option}
+                    key={option.label}
                     type="button"
                     onClick={() => {
-                      selectPresetDuration(option * 60);
+                      selectPresetDuration(option.seconds);
                     }}
                     className={`h-10 rounded-md border px-3 text-sm font-semibold transition ${
-                      durationSeconds === option * 60
+                      durationSeconds === option.seconds
                         ? "border-zinc-950 bg-zinc-950 text-white"
                         : "border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
                     }`}
                   >
-                    {option}m
+                    {option.label}
                   </button>
                 ))}
               </div>
