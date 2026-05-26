@@ -13,7 +13,14 @@ type AppHeaderProps = {
 type NavItem = {
   href: string;
   label: string;
-  icon: "home" | "user" | "brain" | "calendar" | "matrix" | "projects";
+  icon:
+    | "home"
+    | "user"
+    | "brain"
+    | "calendar"
+    | "matrix"
+    | "projects"
+    | "quests";
   activePath?: string;
 };
 
@@ -49,6 +56,11 @@ const NAV_ITEMS: NavItem[] = [
     label: "Projekte",
     icon: "projects",
   },
+  {
+    href: "/quests",
+    label: "Quests",
+    icon: "quests",
+  },
 ] as const;
 
 export function AppHeader({ title }: AppHeaderProps) {
@@ -72,7 +84,7 @@ export function AppHeader({ title }: AppHeaderProps) {
 
       <nav
         aria-label="Hauptnavigation"
-        className="grid w-max grid-cols-7 gap-2"
+        className="grid w-max grid-cols-8 gap-2"
       >
         {NAV_ITEMS.map((item) => {
           const isActive = pathname === (item.activePath ?? item.href);
@@ -209,6 +221,28 @@ function NavIcon({ icon }: { icon: NavItem["icon"] }) {
         <path d="M4 12h16" />
         <path d="M4 17h10" />
         <path d="M7 4v16" />
+      </svg>
+    );
+  }
+
+  if (icon === "quests") {
+    return (
+      <svg
+        aria-hidden="true"
+        className="h-5 w-5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+      >
+        <path d="M9 6h11" />
+        <path d="M9 12h11" />
+        <path d="M9 18h11" />
+        <path d="m4 6 1 1 2-2" />
+        <path d="m4 12 1 1 2-2" />
+        <path d="m4 18 1 1 2-2" />
       </svg>
     );
   }

@@ -101,10 +101,10 @@ export function TopicForm({ onCreateTopic }: TopicFormProps) {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-            Neues Thema
+            Schedule Repetition
           </p>
           <h2 className="mt-2 text-xl font-semibold tracking-tight">
-            Learning Topic erstellen
+            Wiederholung planen
           </h2>
         </div>
       </div>

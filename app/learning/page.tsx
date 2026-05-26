@@ -291,7 +291,7 @@ export default function LearningPage() {
   return (
     <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
       <section className="mx-auto w-full max-w-6xl">
-        <AppHeader title="Learning Topics" />
+        <AppHeader title="Spaced Repetition" />
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <SummaryTile label="Reviews heute" value={summary.todayCount} />
