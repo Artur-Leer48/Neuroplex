@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import type { RefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "@/app/app-header";
@@ -40,6 +41,7 @@ const ACTIVE_FOCUS_PREP_STORAGE_KEY = "neuroplex:active-focus-prep";
 const FOCUS_PREP_SETTINGS_STORAGE_KEY = "neuroplex:focus-prep-settings";
 const PLASTICITY_SETTINGS_STORAGE_KEY = "neuroplex:plasticity-settings";
 const PLASTICITY_END_SOUND_PATH = "/plasticity-session-end.mp3";
+const RECOVERY_AMBIENT_SOUND_PATH = "/still-water-garden.mp3";
 const PRAISE_MESSAGES = [
   "Sehr gut gemacht! Du hast deinem Gehirn gerade Zeit gegeben, das Gelernte zu sortieren.",
   "Stark abgeschlossen. Genau solche Pausen machen Training wirksam.",
@@ -132,6 +134,7 @@ export default function PlasticityPage() {
   const plasticityEndAtRef = useRef<number | null>(null);
   const recoveryEndAtRef = useRef<number | null>(null);
   const focusPrepEndAtRef = useRef<number | null>(null);
+  const recoveryAmbientAudioRef = useRef<HTMLAudioElement | null>(null);
   const activeTaskRef = useRef<{
     id: string | null;
     title: string | null;
@@ -688,6 +691,24 @@ export default function PlasticityPage() {
     selectedActivity,
     timerName,
   ]);
+
+  useEffect(() => {
+    const shouldPlayAmbientSound =
+      isRecoveryRunning &&
+      (selectedActivity?.id === "meditation" ||
+        selectedActivity?.id === "yoga-nidra");
+
+    if (!shouldPlayAmbientSound) {
+      stopRecoveryAmbientSound(recoveryAmbientAudioRef);
+      return;
+    }
+
+    playRecoveryAmbientSound(recoveryAmbientAudioRef);
+
+    return () => {
+      stopRecoveryAmbientSound(recoveryAmbientAudioRef);
+    };
+  }, [isRecoveryRunning, selectedActivity?.id]);
 
   useEffect(() => {
     if (isRunning && !plasticityEndAtRef.current) {
@@ -1857,6 +1878,34 @@ function playPlasticityEndSound() {
   void audio.play().catch(() => {
     // Browsers may block audio if the timer was restored without a user gesture.
   });
+}
+
+function playRecoveryAmbientSound(audioRef: RefObject<HTMLAudioElement | null>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (!audioRef.current) {
+    const audio = new Audio(RECOVERY_AMBIENT_SOUND_PATH);
+    audio.loop = true;
+    audio.volume = 0.45;
+    audioRef.current = audio;
+  }
+
+  void audioRef.current.play().catch(() => {
+    // Browsers may block audio if recovery was restored without a user gesture.
+  });
+}
+
+function stopRecoveryAmbientSound(audioRef: RefObject<HTMLAudioElement | null>) {
+  const audio = audioRef.current;
+
+  if (!audio) {
+    return;
+  }
+
+  audio.pause();
+  audio.currentTime = 0;
 }
 
 function readActiveTimerSession() {
