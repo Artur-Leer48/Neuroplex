@@ -32,6 +32,7 @@ const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
 const ACTIVE_FOCUS_PREP_STORAGE_KEY = "neuroplex:active-focus-prep";
 const FOCUS_PREP_SETTINGS_STORAGE_KEY = "neuroplex:focus-prep-settings";
 const PLASTICITY_SETTINGS_STORAGE_KEY = "neuroplex:plasticity-settings";
+const PLASTICITY_END_SOUND_PATH = "/plasticity-session-end.mp3";
 const PRAISE_MESSAGES = [
   "Sehr gut gemacht! Du hast deinem Gehirn gerade Zeit gegeben, das Gelernte zu sortieren.",
   "Stark abgeschlossen. Genau solche Pausen machen Training wirksam.",
@@ -555,6 +556,7 @@ export default function PlasticityPage() {
       setIsRunning(false);
       clearActiveTimerSession();
       plasticityEndAtRef.current = null;
+      playPlasticityEndSound();
       void recordPlasticityStat(
         supabaseBrowser,
         "plasticity",
@@ -1836,6 +1838,18 @@ function getRemainingSeconds(endAt: number | null) {
   }
 
   return Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+}
+
+function playPlasticityEndSound() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const audio = new Audio(PLASTICITY_END_SOUND_PATH);
+  audio.volume = 0.75;
+  void audio.play().catch(() => {
+    // Browsers may block audio if the timer was restored without a user gesture.
+  });
 }
 
 function readActiveTimerSession() {
