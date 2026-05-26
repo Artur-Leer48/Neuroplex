@@ -1,5 +1,7 @@
 "use client";
 
+import { getScopedStorageKey } from "@/lib/scoped-storage";
+
 const STORAGE_KEY = "neuroplex:learning-topics";
 
 export const REVIEW_INTERVAL_DAYS = [1, 3, 7, 14, 30, 60] as const;
@@ -111,7 +113,7 @@ export function readLearningTopics() {
     return [];
   }
 
-  const rawTopics = window.localStorage.getItem(STORAGE_KEY);
+  const rawTopics = window.localStorage.getItem(getScopedStorageKey(STORAGE_KEY));
 
   if (!rawTopics) {
     return [];
@@ -135,7 +137,10 @@ export function writeLearningTopics(topics: LearningTopic[]) {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(topics));
+  window.localStorage.setItem(
+    getScopedStorageKey(STORAGE_KEY),
+    JSON.stringify(topics),
+  );
 }
 
 export function createLearningTopic(draft: LearningTopicDraft): LearningTopic {

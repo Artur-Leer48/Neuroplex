@@ -1,5 +1,7 @@
 "use client";
 
+import { getScopedStorageKey } from "@/lib/scoped-storage";
+
 const STORAGE_KEY = "neuroplex:eisenhower-todos";
 
 export type EisenhowerQuadrant =
@@ -22,7 +24,7 @@ export function readEisenhowerTodos() {
     return [];
   }
 
-  const rawTodos = window.localStorage.getItem(STORAGE_KEY);
+  const rawTodos = window.localStorage.getItem(getScopedStorageKey(STORAGE_KEY));
 
   if (!rawTodos) {
     return [];
@@ -46,7 +48,10 @@ export function writeEisenhowerTodos(todos: EisenhowerTodo[]) {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+  window.localStorage.setItem(
+    getScopedStorageKey(STORAGE_KEY),
+    JSON.stringify(todos),
+  );
 }
 
 export function createEisenhowerTodo(

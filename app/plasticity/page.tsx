@@ -1,13 +1,14 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AppHeader } from "@/app/app-header";
 import {
   CURRENT_TASK_CHANGED_EVENT,
   readCurrentTask,
 } from "@/lib/current-task";
+import { hasDemoOrSupabaseSession } from "@/lib/demo-auth";
 import {
   readEisenhowerTodos,
   type EisenhowerQuadrant,
@@ -16,6 +17,7 @@ import {
 import { consumePendingFocusSession } from "@/lib/focus-session";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { recordPlasticityStat } from "@/lib/plasticity-stats";
+import { getScopedStorageKey } from "@/lib/scoped-storage";
 
 const TIMER_OPTIONS = [30, 45, 60, 75, 90];
 const MAX_DURATION_SECONDS = 2 * 60 * 60;
@@ -302,13 +304,15 @@ export default function PlasticityPage() {
     let isMounted = true;
 
     async function loadSession() {
-      const { data, error } = await supabaseBrowser.auth.getSession();
+      const { isDemo, session, error } = await hasDemoOrSupabaseSession(() =>
+        supabaseBrowser.auth.getSession(),
+      );
 
       if (!isMounted) {
         return;
       }
 
-      if (error || !data.session) {
+      if (error || (!isDemo && !session)) {
         router.replace("/login");
         return;
       }
@@ -938,43 +942,7 @@ export default function PlasticityPage() {
   return (
     <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
       <section className="mx-auto w-full max-w-3xl">
-        <header className="mb-8 flex flex-col gap-4 border-b border-zinc-200 pb-6 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
-              Neuroplex
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
-              Plasticity
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/dashboard"
-              aria-label="Home"
-              title="Home"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-            >
-              <HomeIcon />
-            </Link>
-
-            <Link
-              href="/personal"
-              aria-label="Persoenlicher Bereich"
-              title="Persoenlicher Bereich"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-            >
-              <UserIcon />
-            </Link>
-
-            <Link
-              href="/learning"
-              className="flex h-10 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
-            >
-              Learning
-            </Link>
-          </div>
-        </header>
+        <AppHeader title="Plasticity" />
 
         {isFocusPrepActive && (
           <div className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-zinc-50 px-4 text-zinc-950">
@@ -1512,7 +1480,9 @@ function readActiveTimerSession() {
     return null;
   }
 
-  const rawSession = window.localStorage.getItem(ACTIVE_TIMER_STORAGE_KEY);
+  const rawSession = window.localStorage.getItem(
+    getScopedStorageKey(ACTIVE_TIMER_STORAGE_KEY),
+  );
 
   if (!rawSession) {
     return null;
@@ -1532,7 +1502,7 @@ function saveActiveTimerSession(session: ActiveTimerSession) {
   }
 
   window.localStorage.setItem(
-    ACTIVE_TIMER_STORAGE_KEY,
+    getScopedStorageKey(ACTIVE_TIMER_STORAGE_KEY),
     JSON.stringify(session),
   );
 }
@@ -1542,7 +1512,7 @@ function clearActiveTimerSession() {
     return;
   }
 
-  window.localStorage.removeItem(ACTIVE_TIMER_STORAGE_KEY);
+  window.localStorage.removeItem(getScopedStorageKey(ACTIVE_TIMER_STORAGE_KEY));
 }
 
 type PlasticitySettings = {
@@ -1559,7 +1529,7 @@ function readPlasticitySettings(): PlasticitySettings {
   }
 
   const rawSettings = window.localStorage.getItem(
-    PLASTICITY_SETTINGS_STORAGE_KEY,
+    getScopedStorageKey(PLASTICITY_SETTINGS_STORAGE_KEY),
   );
 
   if (!rawSettings) {
@@ -1596,7 +1566,7 @@ function savePlasticitySettings(settings: PlasticitySettings) {
   }
 
   window.localStorage.setItem(
-    PLASTICITY_SETTINGS_STORAGE_KEY,
+    getScopedStorageKey(PLASTICITY_SETTINGS_STORAGE_KEY),
     JSON.stringify({
       defaultDurationSeconds: Math.min(
         MAX_DURATION_SECONDS,
@@ -1613,7 +1583,7 @@ function readFocusPrepDurationSeconds() {
   }
 
   const rawSettings = window.localStorage.getItem(
-    FOCUS_PREP_SETTINGS_STORAGE_KEY,
+    getScopedStorageKey(FOCUS_PREP_SETTINGS_STORAGE_KEY),
   );
 
   if (!rawSettings) {
@@ -1643,7 +1613,7 @@ function saveFocusPrepDurationSeconds(durationSeconds: number) {
   }
 
   window.localStorage.setItem(
-    FOCUS_PREP_SETTINGS_STORAGE_KEY,
+    getScopedStorageKey(FOCUS_PREP_SETTINGS_STORAGE_KEY),
     JSON.stringify({
       durationSeconds: Math.min(
         MAX_DURATION_SECONDS,
@@ -1658,7 +1628,9 @@ function readActiveFocusPrepSession() {
     return null;
   }
 
-  const rawSession = window.localStorage.getItem(ACTIVE_FOCUS_PREP_STORAGE_KEY);
+  const rawSession = window.localStorage.getItem(
+    getScopedStorageKey(ACTIVE_FOCUS_PREP_STORAGE_KEY),
+  );
 
   if (!rawSession) {
     return null;
@@ -1679,7 +1651,7 @@ function saveActiveFocusPrepSession(session: ActiveFocusPrepSession) {
 
   saveFocusPrepDurationSeconds(session.durationSeconds);
   window.localStorage.setItem(
-    ACTIVE_FOCUS_PREP_STORAGE_KEY,
+    getScopedStorageKey(ACTIVE_FOCUS_PREP_STORAGE_KEY),
     JSON.stringify(session),
   );
 }
@@ -1689,7 +1661,9 @@ function clearActiveFocusPrepSession() {
     return;
   }
 
-  window.localStorage.removeItem(ACTIVE_FOCUS_PREP_STORAGE_KEY);
+  window.localStorage.removeItem(
+    getScopedStorageKey(ACTIVE_FOCUS_PREP_STORAGE_KEY),
+  );
 }
 
 function isActiveTimerSession(value: unknown): value is ActiveTimerSession {
@@ -1922,43 +1896,6 @@ function CloseIcon() {
     >
       <path d="m18 6-12 12" />
       <path d="m6 6 12 12" />
-    </svg>
-  );
-}
-
-function HomeIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="m3 10 9-7 9 7" />
-      <path d="M5 10v10h14V10" />
-      <path d="M9 20v-6h6v6" />
-    </svg>
-  );
-}
-
-function UserIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M20 21a8 8 0 0 0-16 0" />
-      <path d="M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
     </svg>
   );
 }

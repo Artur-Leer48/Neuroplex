@@ -1,9 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { AppHeader } from "@/app/app-header";
+import { hasDemoOrSupabaseSession, isDemoMode } from "@/lib/demo-auth";
 import {
   calculateLearningStreak,
   getClampedReviewRepetitionCount,
@@ -28,6 +29,7 @@ import {
 
 export default function LearningPage() {
   const router = useRouter();
+  const calendarSectionRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [topics, setTopics] = useState<LearningTopic[]>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
@@ -42,13 +44,15 @@ export default function LearningPage() {
     let isMounted = true;
 
     async function loadSession() {
-      const { data, error } = await supabaseBrowser.auth.getSession();
+      const { isDemo, session, error } = await hasDemoOrSupabaseSession(() =>
+        supabaseBrowser.auth.getSession(),
+      );
 
       if (!isMounted) {
         return;
       }
 
-      if (error || !data.session) {
+      if (error || (!isDemo && !session)) {
         router.replace("/login");
         return;
       }
@@ -73,6 +77,21 @@ export default function LearningPage() {
 
     writeLearningTopics(topics);
   }, [isLoading, topics]);
+
+  useEffect(() => {
+    if (isLoading || typeof window === "undefined") {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get("panel") === "calendar") {
+      calendarSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+    }
+  }, [isLoading]);
 
   const openTopic = useMemo(
     () => topics.find((topic) => topic.id === openTopicId) ?? null,
@@ -248,31 +267,7 @@ export default function LearningPage() {
   return (
     <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
       <section className="mx-auto w-full max-w-6xl">
-        <header className="mb-8 flex flex-col gap-4 border-b border-zinc-200 pb-6 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
-              Neuroplex
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
-              Learning Topics
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/plasticity"
-              className="flex h-10 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
-            >
-              Plasticity
-            </Link>
-            <Link
-              href="/dashboard"
-              className="flex h-10 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
-            >
-              Dashboard
-            </Link>
-          </div>
-        </header>
+        <AppHeader title="Learning Topics" />
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <SummaryTile label="Reviews heute" value={summary.todayCount} />
@@ -303,7 +298,7 @@ export default function LearningPage() {
             <TopicForm onCreateTopic={createTopic} />
           </div>
 
-          <div className="space-y-6">
+          <div ref={calendarSectionRef} className="scroll-mt-6 space-y-6">
             <ReviewCalendar
               topics={topics}
               selectedTopicId={selectedTopicId}
@@ -364,6 +359,10 @@ async function uploadLearningResourceFile(
   topicId: string,
   file: File,
 ): Promise<LearningResourceFile> {
+  if (isDemoMode()) {
+    throw new Error("Dateiupload ist im Demo-Modus nicht verfuegbar.");
+  }
+
   const { data: userData, error: userError } =
     await supabaseBrowser.auth.getUser();
 

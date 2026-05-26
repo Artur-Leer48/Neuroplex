@@ -9,7 +9,10 @@ import {
   SupabaseAuthError,
   SupabaseAuthRepository,
 } from "@/features/auth/infrastructure/supabase-auth-repository";
+import { isDemoMode, startDemoMode, stopDemoMode } from "@/lib/demo-auth";
 import { supabaseBrowser } from "@/lib/supabase-browser";
+
+const DEMO_PASSWORD = "demoplex";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,6 +20,7 @@ export default function LoginPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showDemoDialog, setShowDemoDialog] = useState(false);
 
   const authRepository = useMemo(
     () => new SupabaseAuthRepository(supabaseBrowser),
@@ -29,7 +33,7 @@ export default function LoginPage() {
     async function redirectSignedInUser() {
       const { data } = await supabaseBrowser.auth.getSession();
 
-      if (isMounted && data.session) {
+      if (isMounted && (data.session || isDemoMode())) {
         router.replace("/dashboard");
       }
     }
@@ -57,6 +61,8 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
+      stopDemoMode();
+
       if (isRegister) {
         if (password !== passwordConfirmation) {
           throw new Error("Die Passwoerter stimmen nicht ueberein.");
@@ -84,6 +90,30 @@ export default function LoginPage() {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function openDemoDialog() {
+    setError(null);
+    setMessage(null);
+    setShowDemoDialog(true);
+  }
+
+  function handleDemoStart(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const formData = new FormData(event.currentTarget);
+    const demoPassword = String(formData.get("demoPassword") ?? "");
+
+    setError(null);
+    setMessage(null);
+
+    if (demoPassword !== DEMO_PASSWORD) {
+      setError("Demo-Passwort ist falsch.");
+      return;
+    }
+
+    startDemoMode();
+    router.push("/dashboard");
   }
 
   return (
@@ -158,7 +188,7 @@ export default function LoginPage() {
             </p>
           )}
 
-          {error && (
+          {error && !showDemoDialog && (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}
             </p>
@@ -177,6 +207,16 @@ export default function LoginPage() {
           </button>
         </form>
 
+        {!isRegister && (
+          <button
+            type="button"
+            onClick={openDemoDialog}
+            className="mt-4 flex h-11 w-full items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+          >
+            Demo starten
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => {
@@ -191,6 +231,65 @@ export default function LoginPage() {
             : "Noch keinen Account? Registrieren"}
         </button>
       </section>
+
+      {showDemoDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="demo-dialog-title"
+            className="w-full max-w-sm rounded-lg bg-white p-6 text-zinc-950 shadow-xl"
+            onSubmit={handleDemoStart}
+          >
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Demo-Zugang
+            </p>
+            <h2
+              id="demo-dialog-title"
+              className="mt-3 text-xl font-semibold tracking-tight"
+            >
+              Demo starten
+            </h2>
+
+            <label className="mt-5 block text-sm font-medium text-zinc-700">
+              Demo-Passwort
+              <input
+                name="demoPassword"
+                type="password"
+                autoComplete="off"
+                required
+                autoFocus
+                className="mt-2 w-full rounded-md border border-zinc-300 px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              />
+            </label>
+
+            {error && (
+              <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </p>
+            )}
+
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDemoDialog(false);
+                  setError(null);
+                }}
+                className="flex h-10 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="submit"
+                className="flex h-10 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+              >
+                Starten
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   );
 }

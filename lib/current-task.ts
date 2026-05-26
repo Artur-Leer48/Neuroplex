@@ -1,5 +1,7 @@
 "use client";
 
+import { getScopedStorageKey } from "@/lib/scoped-storage";
+
 const CURRENT_TASK_STORAGE_KEY = "neuroplex:current-task";
 export const CURRENT_TASK_CHANGED_EVENT = "neuroplex:current-task-changed";
 
@@ -14,7 +16,9 @@ export function readCurrentTask() {
     return null;
   }
 
-  const rawTask = window.localStorage.getItem(CURRENT_TASK_STORAGE_KEY);
+  const rawTask = window.localStorage.getItem(
+    getScopedStorageKey(CURRENT_TASK_STORAGE_KEY),
+  );
 
   if (!rawTask) {
     return null;
@@ -39,7 +43,10 @@ export function setCurrentTask(task: Pick<CurrentTask, "id" | "title">) {
     setAt: new Date().toISOString(),
   };
 
-  window.localStorage.setItem(CURRENT_TASK_STORAGE_KEY, JSON.stringify(nextTask));
+  window.localStorage.setItem(
+    getScopedStorageKey(CURRENT_TASK_STORAGE_KEY),
+    JSON.stringify(nextTask),
+  );
   window.dispatchEvent(new Event(CURRENT_TASK_CHANGED_EVENT));
 }
 

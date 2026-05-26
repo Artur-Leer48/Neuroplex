@@ -1,5 +1,7 @@
 "use client";
 
+import { getScopedStorageKey } from "@/lib/scoped-storage";
+
 const PENDING_FOCUS_STORAGE_KEY = "neuroplex:pending-focus-session";
 
 export type PendingFocusSession = {
@@ -22,7 +24,7 @@ export function setPendingFocusSession(
   };
 
   window.localStorage.setItem(
-    PENDING_FOCUS_STORAGE_KEY,
+    getScopedStorageKey(PENDING_FOCUS_STORAGE_KEY),
     JSON.stringify(nextSession),
   );
 }
@@ -32,8 +34,9 @@ export function consumePendingFocusSession() {
     return null;
   }
 
-  const rawSession = window.localStorage.getItem(PENDING_FOCUS_STORAGE_KEY);
-  window.localStorage.removeItem(PENDING_FOCUS_STORAGE_KEY);
+  const storageKey = getScopedStorageKey(PENDING_FOCUS_STORAGE_KEY);
+  const rawSession = window.localStorage.getItem(storageKey);
+  window.localStorage.removeItem(storageKey);
 
   if (!rawSession) {
     return null;

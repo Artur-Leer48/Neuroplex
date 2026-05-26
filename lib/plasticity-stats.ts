@@ -2,6 +2,8 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { isDemoMode } from "@/lib/demo-auth";
+
 export type PlasticityStatType =
   | "plasticity"
   | "meditation"
@@ -59,6 +61,10 @@ export async function recordPlasticityStat(
     title?: string | null;
   },
 ) {
+  if (isDemoMode()) {
+    return;
+  }
+
   const { data: userData, error: userError } = await supabase.auth.getUser();
 
   if (userError || !userData.user) {

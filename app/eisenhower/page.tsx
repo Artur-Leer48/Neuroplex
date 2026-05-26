@@ -1,9 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { AppHeader } from "@/app/app-header";
+import { hasDemoOrSupabaseSession } from "@/lib/demo-auth";
 import {
   createEisenhowerTodo,
   readEisenhowerTodos,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/eisenhower-todos";
 import { setCurrentTask } from "@/lib/current-task";
 import { setPendingFocusSession } from "@/lib/focus-session";
+import { getScopedStorageKey } from "@/lib/scoped-storage";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 
 const INFO_STORAGE_KEY = "neuroplex:eisenhower-info-seen";
@@ -101,19 +103,24 @@ export default function EisenhowerPage() {
     let isMounted = true;
 
     async function loadPage() {
-      const { data, error } = await supabaseBrowser.auth.getSession();
+      const { isDemo, session, error } = await hasDemoOrSupabaseSession(() =>
+        supabaseBrowser.auth.getSession(),
+      );
 
       if (!isMounted) {
         return;
       }
 
-      if (error || !data.session) {
+      if (error || (!isDemo && !session)) {
         router.replace("/login");
         return;
       }
 
       setTodos(readEisenhowerTodos());
-      setShowInfo(window.localStorage.getItem(INFO_STORAGE_KEY) !== "true");
+      setShowInfo(
+        window.localStorage.getItem(getScopedStorageKey(INFO_STORAGE_KEY)) !==
+          "true",
+      );
       setShowTimerWidget(readTimerWidgetVisible());
       setTimerWidgetPosition(readTimerWidgetPosition());
       setIsLoading(false);
@@ -227,7 +234,7 @@ export default function EisenhowerPage() {
   }
 
   function dismissInfo() {
-    window.localStorage.setItem(INFO_STORAGE_KEY, "true");
+    window.localStorage.setItem(getScopedStorageKey(INFO_STORAGE_KEY), "true");
     setShowInfo(false);
   }
 
@@ -255,7 +262,7 @@ export default function EisenhowerPage() {
   function updateTimerWidgetVisibility(nextVisibility: boolean) {
     setShowTimerWidget(nextVisibility);
     window.localStorage.setItem(
-      TIMER_WIDGET_STORAGE_KEY,
+      getScopedStorageKey(TIMER_WIDGET_STORAGE_KEY),
       JSON.stringify({
         visible: nextVisibility,
         position: timerWidgetPosition,
@@ -267,7 +274,7 @@ export default function EisenhowerPage() {
     setTimerWidgetPosition(position);
     setIsDraggingTimerWidget(false);
     window.localStorage.setItem(
-      TIMER_WIDGET_STORAGE_KEY,
+      getScopedStorageKey(TIMER_WIDGET_STORAGE_KEY),
       JSON.stringify({
         visible: showTimerWidget,
         position,
@@ -288,36 +295,7 @@ export default function EisenhowerPage() {
   return (
     <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
       <section className="mx-auto w-full max-w-5xl">
-        <header className="mb-8 flex flex-col gap-4 border-b border-zinc-200 pb-6 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
-              Neuroplex
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
-              Eisenhower
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/dashboard"
-              aria-label="Home"
-              title="Home"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-            >
-              <HomeIcon />
-            </Link>
-
-            <Link
-              href="/personal"
-              aria-label="Persoenlicher Bereich"
-              title="Persoenlicher Bereich"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-            >
-              <UserIcon />
-            </Link>
-          </div>
-        </header>
+        <AppHeader title="Eisenhower" />
 
         <form
           onSubmit={handleSubmit}
@@ -691,7 +669,9 @@ function readActiveTimerSession() {
     return null;
   }
 
-  const rawSession = window.localStorage.getItem(ACTIVE_TIMER_STORAGE_KEY);
+  const rawSession = window.localStorage.getItem(
+    getScopedStorageKey(ACTIVE_TIMER_STORAGE_KEY),
+  );
 
   if (!rawSession) {
     return null;
@@ -745,7 +725,9 @@ function readTimerWidgetSettings() {
     };
   }
 
-  const rawSettings = window.localStorage.getItem(TIMER_WIDGET_STORAGE_KEY);
+  const rawSettings = window.localStorage.getItem(
+    getScopedStorageKey(TIMER_WIDGET_STORAGE_KEY),
+  );
 
   if (!rawSettings) {
     return {
@@ -791,41 +773,4 @@ function formatSeconds(totalSeconds: number) {
     2,
     "0",
   )}`;
-}
-
-function HomeIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="m3 10 9-7 9 7" />
-      <path d="M5 10v10h14V10" />
-      <path d="M9 20v-6h6v6" />
-    </svg>
-  );
-}
-
-function UserIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M20 21a8 8 0 0 0-16 0" />
-      <path d="M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
-    </svg>
-  );
 }

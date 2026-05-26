@@ -1,9 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { AppHeader } from "@/app/app-header";
+import { hasDemoOrSupabaseSession } from "@/lib/demo-auth";
 import {
   readPlasticityStats,
   summarizePlasticityStats,
@@ -33,18 +34,22 @@ export default function PersonalPage() {
     let isMounted = true;
 
     async function loadPersonalArea() {
-      const { data, error } = await supabaseBrowser.auth.getSession();
+      const { isDemo, session, error } = await hasDemoOrSupabaseSession(() =>
+        supabaseBrowser.auth.getSession(),
+      );
 
       if (!isMounted) {
         return;
       }
 
-      if (error || !data.session) {
+      if (error || (!isDemo && !session)) {
         router.replace("/login");
         return;
       }
 
-      const nextEntries = await readPlasticityStats(supabaseBrowser);
+      const nextEntries = isDemo
+        ? []
+        : await readPlasticityStats(supabaseBrowser);
       setEntries(nextEntries);
       setSummary(summarizePlasticityStats(nextEntries));
       setTaskSummaries(summarizeTaskTime(nextEntries));
@@ -71,45 +76,7 @@ export default function PersonalPage() {
   return (
     <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
       <section className="mx-auto w-full max-w-3xl">
-        <header className="mb-8 flex flex-col gap-4 border-b border-zinc-200 pb-6 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
-              Neuroplex
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
-              Persoenlicher Bereich
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/dashboard"
-              aria-label="Home"
-              title="Home"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-            >
-              <HomeIcon />
-            </Link>
-
-            <Link
-              href="/plasticity"
-              aria-label="Plasticity"
-              title="Plasticity"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-            >
-              <TimerIcon />
-            </Link>
-
-            <Link
-              href="/personal"
-              aria-label="Persoenlicher Bereich"
-              title="Persoenlicher Bereich"
-              className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-950 bg-zinc-950 text-white transition hover:bg-zinc-800"
-            >
-              <UserIcon />
-            </Link>
-          </div>
-        </header>
+        <AppHeader title="Persoenlicher Bereich" />
 
         <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
@@ -231,60 +198,4 @@ function formatType(type: PlasticityStatEntry["type"]) {
   }
 
   return "Meditation";
-}
-
-function HomeIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="m3 10 9-7 9 7" />
-      <path d="M5 10v10h14V10" />
-      <path d="M9 20v-6h6v6" />
-    </svg>
-  );
-}
-
-function TimerIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M10 2h4" />
-      <path d="M12 14V8" />
-      <path d="M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z" />
-    </svg>
-  );
-}
-
-function UserIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M20 21a8 8 0 0 0-16 0" />
-      <path d="M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
-    </svg>
-  );
 }
