@@ -34,7 +34,7 @@ export default function LoginPage() {
       const { data } = await supabaseBrowser.auth.getSession();
 
       if (isMounted && (data.session || isDemoMode())) {
-        router.replace("/dashboard");
+        router.replace("/");
       }
     }
 
@@ -84,7 +84,7 @@ export default function LoginPage() {
       });
 
       setMessage(`${result.message} Angemeldet als ${result.user?.email}.`);
-      router.push("/dashboard");
+      router.push("/");
     } catch (caughtError) {
       setError(formatAuthError(caughtError));
     } finally {
@@ -113,7 +113,7 @@ export default function LoginPage() {
     }
 
     startDemoMode();
-    router.push("/dashboard");
+    router.push("/");
   }
 
   return (

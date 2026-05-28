@@ -21,6 +21,7 @@ export default function ProjectsPage() {
   const [selectedType, setSelectedType] = useState<
     EisenhowerTodo["itemType"] | "Alle"
   >("Alle");
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -39,7 +40,9 @@ export default function ProjectsPage() {
         return;
       }
 
-      setItems(readEisenhowerTodos());
+      const savedItems = readEisenhowerTodos();
+      setItems(savedItems);
+      setSelectedItemId(savedItems[0]?.id ?? null);
       setIsLoading(false);
     }
 
@@ -57,6 +60,29 @@ export default function ProjectsPage() {
         : items.filter((item) => item.itemType === selectedType),
     [items, selectedType],
   );
+  const selectedItem = useMemo(
+    () =>
+      filteredItems.find((item) => item.id === selectedItemId) ??
+      filteredItems[0] ??
+      null,
+    [filteredItems, selectedItemId],
+  );
+  const summary = useMemo(() => {
+    const activeItems = items.filter((item) => !item.isDone);
+    const allSubtasks = items.flatMap((item) => item.subtasks);
+    const doneSubtasks = allSubtasks.filter((subtask) => subtask.isDone);
+
+    return {
+      activeCount: activeItems.length,
+      projectCount: items.filter((item) => item.itemType === "Projekt").length,
+      routineCount: items.filter((item) => item.itemType === "Wiederholung")
+        .length,
+      subtaskProgress:
+        allSubtasks.length === 0
+          ? "0%"
+          : `${Math.round((doneSubtasks.length / allSubtasks.length) * 100)}%`,
+    };
+  }, [items]);
 
   function updateItems(nextItems: EisenhowerTodo[]) {
     setItems(nextItems);
@@ -134,38 +160,173 @@ export default function ProjectsPage() {
       <section className="mx-auto w-full max-w-6xl">
         <AppHeader title="Projekte & Routinen" />
 
-        <div className="flex flex-wrap gap-2">
-          {(["Alle", "Projekt", "Wiederholung", "Sprint"] as const).map(
-            (type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setSelectedType(type)}
-                className={`h-9 rounded-md border px-3 text-sm font-semibold transition ${
-                  selectedType === type
-                    ? "border-zinc-950 bg-zinc-950 text-white"
-                    : "border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
-                }`}
-              >
-                {type}
-              </button>
-            ),
-          )}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <SummaryTile label="Aktiv" value={summary.activeCount} />
+          <SummaryTile label="Projekte" value={summary.projectCount} />
+          <SummaryTile label="Routinen" value={summary.routineCount} />
+          <SummaryTile label="Checklisten" value={summary.subtaskProgress} />
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {filteredItems.map((item) => (
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
+          <div className="space-y-6">
+            <ProjectTypeFilter
+              selectedType={selectedType}
+              onSelectType={(type) => {
+                setSelectedType(type);
+                setSelectedItemId(null);
+              }}
+            />
+
+            <ProjectList
+              items={filteredItems}
+              selectedItemId={selectedItem?.id ?? null}
+              onSelectItem={setSelectedItemId}
+            />
+          </div>
+
+          {selectedItem ? (
             <ProjectCard
-              key={item.id}
-              item={item}
+              item={selectedItem}
               onAddSubtask={addSubtask}
               onToggleSubtask={toggleSubtask}
               onUpdateDescription={updateDescription}
             />
-          ))}
+          ) : (
+            <div className="rounded-lg border border-zinc-200 bg-white p-6 text-sm font-medium text-zinc-600 shadow-sm">
+              Keine Projekte für diesen Filter.
+            </div>
+          )}
         </div>
       </section>
     </main>
+  );
+}
+
+type SummaryTileProps = {
+  label: string;
+  value: number | string;
+};
+
+function SummaryTile({ label, value }: SummaryTileProps) {
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+type ProjectTypeFilterProps = {
+  selectedType: EisenhowerTodo["itemType"] | "Alle";
+  onSelectType: (type: EisenhowerTodo["itemType"] | "Alle") => void;
+};
+
+function ProjectTypeFilter({
+  selectedType,
+  onSelectType,
+}: ProjectTypeFilterProps) {
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+        Ansicht
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {(["Alle", "Projekt", "Wiederholung", "Sprint"] as const).map(
+          (type) => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => onSelectType(type)}
+              className={`h-9 rounded-md border px-3 text-sm font-semibold transition ${
+                selectedType === type
+                  ? "border-zinc-950 bg-zinc-950 text-white"
+                  : "border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
+              }`}
+            >
+              {type}
+            </button>
+          ),
+        )}
+      </div>
+    </div>
+  );
+}
+
+type ProjectListProps = {
+  items: EisenhowerTodo[];
+  selectedItemId: string | null;
+  onSelectItem: (itemId: string) => void;
+};
+
+function ProjectList({
+  items,
+  selectedItemId,
+  onSelectItem,
+}: ProjectListProps) {
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+          Projekte
+        </p>
+        <span className="text-xs font-semibold text-zinc-500">
+          {items.length}
+        </span>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="mt-4 text-sm text-zinc-600">Keine Eintraege vorhanden.</p>
+      ) : (
+        <div className="mt-4 space-y-2">
+          {items.map((item) => {
+            const doneCount = item.subtasks.filter(
+              (subtask) => subtask.isDone,
+            ).length;
+
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectItem(item.id)}
+                className={`w-full rounded-md border px-3 py-2 text-left transition ${
+                  selectedItemId === item.id
+                    ? "border-zinc-950 bg-zinc-950 text-white"
+                    : "border-zinc-200 bg-white text-zinc-950 hover:border-zinc-300"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-sm font-semibold">
+                    {item.title}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${
+                      selectedItemId === item.id
+                        ? "bg-white/15 text-white"
+                        : "bg-zinc-100 text-zinc-700"
+                    }`}
+                  >
+                    {item.itemType}
+                  </span>
+                </div>
+                <p
+                  className={`mt-2 text-xs font-medium ${
+                    selectedItemId === item.id
+                      ? "text-zinc-200"
+                      : "text-zinc-500"
+                  }`}
+                >
+                  {doneCount}/{item.subtasks.length} Checkpoints
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

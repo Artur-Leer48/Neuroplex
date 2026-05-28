@@ -7,6 +7,8 @@ const STORAGE_KEY = "neuroplex:learning-topics";
 export const REVIEW_INTERVAL_DAYS = [1, 3, 7, 14, 30, 60] as const;
 
 export type LearningGoal = "Verstehen" | "Auswendig lernen" | "Pruefung" | "Projekt";
+export type ReviewInterval = "spaced" | "daily" | "weekly";
+export type LearningEntryType = "Vorhaben" | "Spaced Repetition";
 export type ResourceType =
   | "Buch"
   | "Artikel"
@@ -59,6 +61,7 @@ export type ReviewSchedule = {
 export type ProjectedReview = {
   topicId: string;
   topicTitle: string;
+  reviewKey: string;
   date: string;
   intervalDays: number;
   sequence: number;
@@ -77,7 +80,11 @@ export type LearningTopic = {
   resources: LearningResource[];
   reviewHistory: ReviewSession[];
   schedule: ReviewSchedule;
+  reviewInterval: ReviewInterval;
   reviewRepetitionCount: number;
+  entryType: LearningEntryType;
+  deckNames: string[];
+  deletedReviewKeys: string[];
   recallQuestions: string[];
   createdAt: string;
   updatedAt: string;
@@ -90,7 +97,10 @@ export type LearningTopicDraft = {
   goal: LearningGoal;
   startDate: string;
   deadline: string;
+  reviewInterval: ReviewInterval;
   reviewRepetitionCount: string;
+  entryType?: LearningEntryType;
+  deckNames?: string;
 };
 
 export type LearningResourceDraft = {
@@ -150,6 +160,9 @@ export function createLearningTopic(draft: LearningTopicDraft): LearningTopic {
   const reviewRepetitionCount = getClampedReviewRepetitionCount(
     Number(draft.reviewRepetitionCount),
   );
+  const reviewInterval = isReviewInterval(draft.reviewInterval)
+    ? draft.reviewInterval
+    : "spaced";
 
   return {
     id,
@@ -164,10 +177,14 @@ export function createLearningTopic(draft: LearningTopicDraft): LearningTopic {
     schedule: {
       topicId: id,
       currentIntervalIndex: 0,
-      nextReviewDate: addDays(startDate, REVIEW_INTERVAL_DAYS[0]),
+      nextReviewDate: addDays(startDate, getFirstReviewIntervalDays(reviewInterval)),
       isCompleted: false,
     },
+    reviewInterval,
     reviewRepetitionCount,
+    entryType: draft.entryType ?? "Vorhaben",
+    deckNames: parseTags(draft.deckNames ?? ""),
+    deletedReviewKeys: [],
     recallQuestions: [
       "Was ist die Kernidee?",
       "Welche Details wuerdest du ohne Notizen erklaeren?",
@@ -201,11 +218,15 @@ export function completeReview(
   topic: LearningTopic,
   draft: ReviewCompletionDraft,
 ) {
-  const nextIntervalIndex = getNextIntervalIndex(
-    topic.schedule.currentIntervalIndex,
-    draft.rating,
+  const reviewInterval = topic.reviewInterval ?? "spaced";
+  const nextIntervalIndex =
+    reviewInterval === "spaced"
+      ? getNextIntervalIndex(topic.schedule.currentIntervalIndex, draft.rating)
+      : topic.schedule.currentIntervalIndex;
+  const nextReviewDate = addDays(
+    new Date(),
+    getNextReviewIntervalDays(reviewInterval, nextIntervalIndex),
   );
-  const nextReviewDate = addDays(new Date(), REVIEW_INTERVAL_DAYS[nextIntervalIndex]);
   const reviewedAt = new Date().toISOString();
   const review: ReviewSession = {
     id: crypto.randomUUID(),
@@ -235,7 +256,13 @@ export function getTopicReviewState(topic: LearningTopic, today = new Date()) {
     return "completed";
   }
 
-  const reviewDate = startOfDay(new Date(topic.schedule.nextReviewDate));
+  const nextReview = getProjectedReviews(topic)[0];
+
+  if (!nextReview) {
+    return "completed";
+  }
+
+  const reviewDate = startOfDay(new Date(nextReview.date));
   const todayStart = startOfDay(today);
 
   if (reviewDate.getTime() < todayStart.getTime()) {
@@ -250,6 +277,11 @@ export function getTopicReviewState(topic: LearningTopic, today = new Date()) {
 }
 
 export function getProjectedReviews(topic: LearningTopic): ProjectedReview[] {
+  if (topic.schedule.isCompleted) {
+    return [];
+  }
+
+  const reviewInterval = topic.reviewInterval ?? "spaced";
   const repetitionCount = getClampedReviewRepetitionCount(
     topic.reviewRepetitionCount,
   );
@@ -258,6 +290,7 @@ export function getProjectedReviews(topic: LearningTopic): ProjectedReview[] {
       toDateInputValue(new Date(review.reviewedAt)),
     ),
   );
+  const deletedReviewKeys = new Set(topic.deletedReviewKeys ?? []);
   const projectedReviews: ProjectedReview[] = [];
   let intervalIndex = Math.min(
     REVIEW_INTERVAL_DAYS.length - 1,
@@ -266,35 +299,48 @@ export function getProjectedReviews(topic: LearningTopic): ProjectedReview[] {
   let reviewDate = topic.schedule.nextReviewDate;
   let sequence = intervalIndex + 1;
 
-  while (projectedReviews.length < repetitionCount) {
-    const intervalDays = REVIEW_INTERVAL_DAYS[intervalIndex];
+  let generatedReviews = 0;
 
-    projectedReviews.push({
-      topicId: topic.id,
-      topicTitle: topic.title,
-      date: reviewDate,
-      intervalDays,
-      sequence,
-      isNextReview: reviewDate === topic.schedule.nextReviewDate,
-      isCompleted: completedDates.has(reviewDate),
-    });
+  while (generatedReviews < repetitionCount) {
+    const intervalDays = getNextReviewIntervalDays(reviewInterval, intervalIndex);
+    const reviewKey = getReviewKey(reviewDate, sequence);
 
-    const nextIntervalIndex = Math.min(
-      REVIEW_INTERVAL_DAYS.length - 1,
-      intervalIndex + 1,
-    );
+    if (!deletedReviewKeys.has(reviewKey)) {
+      projectedReviews.push({
+        topicId: topic.id,
+        topicTitle: topic.title,
+        reviewKey,
+        date: reviewDate,
+        intervalDays,
+        sequence,
+        isNextReview: reviewDate === topic.schedule.nextReviewDate,
+        isCompleted: completedDates.has(reviewDate),
+      });
+    }
+
+    const nextIntervalIndex =
+      reviewInterval === "spaced"
+        ? Math.min(REVIEW_INTERVAL_DAYS.length - 1, intervalIndex + 1)
+        : intervalIndex;
     const daysToNextReview =
-      nextIntervalIndex === intervalIndex
-        ? REVIEW_INTERVAL_DAYS[nextIntervalIndex]
-        : REVIEW_INTERVAL_DAYS[nextIntervalIndex] -
-          REVIEW_INTERVAL_DAYS[intervalIndex];
+      reviewInterval === "spaced"
+        ? nextIntervalIndex === intervalIndex
+          ? REVIEW_INTERVAL_DAYS[nextIntervalIndex]
+          : REVIEW_INTERVAL_DAYS[nextIntervalIndex] -
+            REVIEW_INTERVAL_DAYS[intervalIndex]
+        : intervalDays;
 
     reviewDate = addDays(reviewDate, daysToNextReview);
     intervalIndex = nextIntervalIndex;
     sequence += 1;
+    generatedReviews += 1;
   }
 
   return projectedReviews;
+}
+
+export function getReviewKey(date: string, sequence: number) {
+  return `${date}:${sequence}`;
 }
 
 export function countRepeatedDays(topic: LearningTopic) {
@@ -393,8 +439,19 @@ function isLearningTopic(value: unknown): value is LearningTopic {
     Array.isArray(topic.reviewHistory) &&
     topic.reviewHistory.every(isReviewSession) &&
     isReviewSchedule(topic.schedule) &&
+    (typeof topic.reviewInterval === "undefined" ||
+      isReviewInterval(topic.reviewInterval)) &&
     (typeof topic.reviewRepetitionCount === "number" ||
       typeof topic.reviewRepetitionCount === "undefined") &&
+    (typeof topic.entryType === "undefined" ||
+      topic.entryType === "Vorhaben" ||
+      topic.entryType === "Spaced Repetition") &&
+    (typeof topic.deckNames === "undefined" ||
+      (Array.isArray(topic.deckNames) &&
+        topic.deckNames.every((deckName) => typeof deckName === "string"))) &&
+    (typeof topic.deletedReviewKeys === "undefined" ||
+      (Array.isArray(topic.deletedReviewKeys) &&
+        topic.deletedReviewKeys.every((reviewKey) => typeof reviewKey === "string"))) &&
     Array.isArray(topic.recallQuestions) &&
     typeof topic.createdAt === "string" &&
     typeof topic.updatedAt === "string"
@@ -412,10 +469,19 @@ function normalizeLearningTopic(topic: LearningTopic): LearningTopic {
       ...resource,
       file: resource.file ?? null,
     })),
+    reviewInterval: isReviewInterval(topic.reviewInterval)
+      ? topic.reviewInterval
+      : "spaced",
     reviewRepetitionCount: getClampedReviewRepetitionCount(
       topic.reviewRepetitionCount ??
         getLegacyRepetitionCount(legacyTopic.reviewHorizonDays),
     ),
+    entryType:
+      topic.entryType === "Spaced Repetition" ? "Spaced Repetition" : "Vorhaben",
+    deckNames: Array.isArray(topic.deckNames) ? topic.deckNames : [],
+    deletedReviewKeys: Array.isArray(topic.deletedReviewKeys)
+      ? topic.deletedReviewKeys
+      : [],
   };
 }
 
@@ -513,6 +579,33 @@ function isLearningGoal(value: unknown): value is LearningGoal {
     value === "Pruefung" ||
     value === "Projekt"
   );
+}
+
+function isReviewInterval(value: unknown): value is ReviewInterval {
+  return value === "spaced" || value === "daily" || value === "weekly";
+}
+
+function getFirstReviewIntervalDays(interval: ReviewInterval) {
+  if (interval === "weekly") {
+    return 7;
+  }
+
+  return 1;
+}
+
+function getNextReviewIntervalDays(
+  interval: ReviewInterval,
+  intervalIndex: number,
+) {
+  if (interval === "daily") {
+    return 1;
+  }
+
+  if (interval === "weekly") {
+    return 7;
+  }
+
+  return REVIEW_INTERVAL_DAYS[intervalIndex];
 }
 
 function isResourceType(value: unknown): value is ResourceType {

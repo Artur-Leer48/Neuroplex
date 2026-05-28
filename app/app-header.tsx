@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 import { stopDemoMode } from "@/lib/demo-auth";
 import { supabaseBrowser } from "@/lib/supabase-browser";
@@ -14,10 +15,10 @@ type NavItem = {
   href: string;
   label: string;
   icon:
-    | "home"
     | "user"
     | "brain"
     | "calendar"
+    | "cards"
     | "matrix"
     | "projects"
     | "quests";
@@ -26,19 +27,10 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   {
-    href: "/dashboard",
-    label: "Home",
-    icon: "home",
-  },
-  {
-    href: "/personal",
-    label: "Persoenlicher Bereich",
-    icon: "user",
-  },
-  {
-    href: "/plasticity",
+    href: "/",
     label: "Plasticity",
     icon: "brain",
+    activePath: "/plasticity",
   },
   {
     href: "/learning?panel=calendar",
@@ -47,25 +39,37 @@ const NAV_ITEMS: NavItem[] = [
     activePath: "/learning",
   },
   {
-    href: "/eisenhower",
-    label: "Eisenhower",
-    icon: "matrix",
-  },
-  {
-    href: "/projects",
-    label: "Projekte",
-    icon: "projects",
-  },
-  {
-    href: "/quests",
-    label: "Quests",
-    icon: "quests",
+    href: "/kartenwerk",
+    label: "Kartenwerk",
+    icon: "cards",
   },
 ] as const;
 
 export function AppHeader({ title }: AppHeaderProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const [isCompact, setIsCompact] = useState(false);
+  const isCompactRef = useRef(false);
+
+  useEffect(() => {
+    function handleScroll() {
+      const shouldBeCompact = isCompactRef.current
+        ? window.scrollY > 8
+        : window.scrollY > 96;
+
+      if (shouldBeCompact === isCompactRef.current) {
+        return;
+      }
+
+      isCompactRef.current = shouldBeCompact;
+      setIsCompact(shouldBeCompact);
+    }
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   async function handleLogout() {
     stopDemoMode();
@@ -74,78 +78,72 @@ export function AppHeader({ title }: AppHeaderProps) {
   }
 
   return (
-    <header className="relative left-1/2 mb-8 flex min-h-32 w-[calc(100vw-2rem)] max-w-6xl -translate-x-1/2 flex-col justify-between gap-5 border-b border-zinc-200 pb-6">
-      <div className="min-w-0">
-        <p className="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
-          Neuroplex
-        </p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>
-      </div>
-
-      <nav
-        aria-label="Hauptnavigation"
-        className="grid w-max grid-cols-8 gap-2"
+    <div className="relative mb-8 h-44">
+      <header
+        className={`sticky top-0 z-40 flex w-full flex-col border-b border-zinc-200 bg-zinc-50/95 backdrop-blur transition-[padding,gap,background-color] duration-200 ease-out ${
+          isCompact ? "gap-0 py-3" : "gap-5 pb-6 pt-0"
+        }`}
       >
-        {NAV_ITEMS.map((item) => {
-          const isActive = pathname === (item.activePath ?? item.href);
-
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-label={item.label}
-              aria-current={isActive ? "page" : undefined}
-              title={item.label}
-              className={`flex h-10 w-10 items-center justify-center rounded-md transition ${
-                isActive
-                  ? "bg-zinc-950 text-white hover:bg-zinc-800"
-                  : "border border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
-              }`}
-            >
-              <NavIcon icon={item.icon} />
-            </Link>
-          );
-        })}
-
-        <button
-          type="button"
-          onClick={handleLogout}
-          aria-label="Abmelden"
-          title="Abmelden"
-          className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+        <nav
+          aria-label="Hauptnavigation"
+          className="flex w-full flex-wrap gap-2"
         >
-          <LogoutIcon />
-        </button>
-      </nav>
-    </header>
+          {NAV_ITEMS.map((item) => {
+            const isActive =
+              pathname === item.href || pathname === item.activePath;
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-label={item.label}
+                aria-current={isActive ? "page" : undefined}
+                title={item.label}
+                className={`flex h-[46px] w-[46px] items-center justify-center rounded-md transition ${
+                  isActive
+                    ? "bg-zinc-950 text-white hover:bg-zinc-800"
+                    : "border border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
+                }`}
+              >
+                <NavIcon icon={item.icon} />
+              </Link>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            aria-label="Abmelden"
+            title="Abmelden"
+            className="flex h-[46px] w-[46px] items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+          >
+            <LogoutIcon />
+          </button>
+        </nav>
+
+        <div
+          className={`min-w-0 overflow-hidden transition-[max-height,opacity,transform] duration-200 ease-out ${
+            isCompact
+              ? "max-h-0 translate-y-[-6px] opacity-0"
+              : "max-h-24 translate-y-0 opacity-100"
+          }`}
+        >
+          <p className="mt-5 text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">
+            Neuroplex
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>
+        </div>
+      </header>
+    </div>
   );
 }
 
 function NavIcon({ icon }: { icon: NavItem["icon"] }) {
-  if (icon === "home") {
-    return (
-      <svg
-        aria-hidden="true"
-        className="h-5 w-5"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-        viewBox="0 0 24 24"
-      >
-        <path d="m3 10 9-7 9 7" />
-        <path d="M5 10v10h14V10" />
-        <path d="M9 20v-6h6v6" />
-      </svg>
-    );
-  }
-
   if (icon === "user") {
     return (
       <svg
         aria-hidden="true"
-        className="h-5 w-5"
+        className="h-[23px] w-[23px]"
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
@@ -163,7 +161,7 @@ function NavIcon({ icon }: { icon: NavItem["icon"] }) {
     return (
       <svg
         aria-hidden="true"
-        className="h-5 w-5"
+        className="h-[23px] w-[23px]"
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
@@ -189,7 +187,7 @@ function NavIcon({ icon }: { icon: NavItem["icon"] }) {
     return (
       <svg
         aria-hidden="true"
-        className="h-5 w-5"
+        className="h-[23px] w-[23px]"
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
@@ -205,11 +203,31 @@ function NavIcon({ icon }: { icon: NavItem["icon"] }) {
     );
   }
 
+  if (icon === "cards") {
+    return (
+      <svg
+        aria-hidden="true"
+        className="h-[23px] w-[23px]"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+      >
+        <path d="M4 7.5 14.5 4l4 12L8 19.5Z" />
+        <path d="M8 6h12v13H9" />
+        <path d="M8 11h7" />
+        <path d="M8 15h5" />
+      </svg>
+    );
+  }
+
   if (icon === "projects") {
     return (
       <svg
         aria-hidden="true"
-        className="h-5 w-5"
+        className="h-[23px] w-[23px]"
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
@@ -229,7 +247,7 @@ function NavIcon({ icon }: { icon: NavItem["icon"] }) {
     return (
       <svg
         aria-hidden="true"
-        className="h-5 w-5"
+        className="h-[23px] w-[23px]"
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
@@ -250,7 +268,7 @@ function NavIcon({ icon }: { icon: NavItem["icon"] }) {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5"
+      className="h-[23px] w-[23px]"
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"
@@ -269,7 +287,7 @@ function LogoutIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5"
+      className="h-[23px] w-[23px]"
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"

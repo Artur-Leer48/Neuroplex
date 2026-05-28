@@ -12,15 +12,17 @@ import {
 import { hasDemoOrSupabaseSession } from "@/lib/demo-auth";
 import {
   readEisenhowerTodos,
-  type EisenhowerQuadrant,
   type EisenhowerTodo,
 } from "@/lib/eisenhower-todos";
 import { consumePendingFocusSession } from "@/lib/focus-session";
 import {
+  createLearningTopic,
   getProjectedReviews,
   readLearningTopics,
+  writeLearningTopics,
   type LearningTopic,
   type ProjectedReview,
+  type ReviewInterval,
 } from "@/lib/learning";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { recordPlasticityStat } from "@/lib/plasticity-stats";
@@ -34,6 +36,14 @@ const TIMER_OPTIONS = [
   { label: "75m", seconds: 75 * 60 },
   { label: "90m", seconds: 90 * 60 },
 ];
+const REVIEW_INTERVAL_OPTIONS: Array<{
+  value: ReviewInterval;
+  label: string;
+}> = [
+  { value: "spaced", label: "Spaced Repetition" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+];
 const MAX_DURATION_SECONDS = 2 * 60 * 60;
 const DOUBLE_SPACE_DELAY_MS = 350;
 const ACTIVE_TIMER_STORAGE_KEY = "neuroplex:active-plasticity-timer";
@@ -42,54 +52,34 @@ const FOCUS_PREP_SETTINGS_STORAGE_KEY = "neuroplex:focus-prep-settings";
 const PLASTICITY_SETTINGS_STORAGE_KEY = "neuroplex:plasticity-settings";
 const PLASTICITY_END_SOUND_PATH = "/plasticity-session-end.mp3";
 const RECOVERY_AMBIENT_SOUND_PATH = "/still-water-garden.mp3";
+const WORK_TO_RECOVERY_VIBRATION_PATTERN = [120, 80, 120];
+const RECOVERY_DONE_VIBRATION_PATTERN = [180, 80, 180, 80, 260];
 const PRAISE_MESSAGES = [
   "Sehr gut gemacht! Du hast deinem Gehirn gerade Zeit gegeben, das Gelernte zu sortieren.",
   "Stark abgeschlossen. Genau solche Pausen machen Training wirksam.",
-  "Gut gemacht. Dein Nervensystem hatte gerade Raum fuer Erholung.",
+  "Gut gemacht. Dein Nervensystem hatte gerade Raum für Erholung.",
   "Schoen drangeblieben. Das war ein sauberer Plasticity-Durchlauf.",
-];
-
-const MINI_QUADRANTS: Array<{
-  id: EisenhowerQuadrant;
-  title: string;
-}> = [
-  {
-    id: "urgent-important",
-    title: "Dringend & wichtig",
-  },
-  {
-    id: "not-urgent-important",
-    title: "Nicht dringend & wichtig",
-  },
-  {
-    id: "urgent-not-important",
-    title: "Dringend & unwichtig",
-  },
-  {
-    id: "not-urgent-not-important",
-    title: "Nicht dringend & unwichtig",
-  },
 ];
 
 const ACTIVITIES = [
   {
     id: "yoga-nidra",
     label: "Yoga Nidra",
-    prompt: "Mache jetzt eine Yoga-Nidra-Session.",
+    prompt: "Zeit für Yoga Nidra",
     defaultRecoverySeconds: 20 * 60,
     hasRecoveryTimer: true,
   },
   {
     id: "meditation",
     label: "Meditieren",
-    prompt: "Meditiere jetzt fuer ein paar Minuten.",
+    prompt: "Zeit für eine Meditation",
     defaultRecoverySeconds: 10 * 60,
     hasRecoveryTimer: true,
   },
   {
     id: "walk",
     label: "Spaziergang",
-    prompt: "Mache jetzt einen ruhigen Spaziergang.",
+    prompt: "Zeit für einen Spaziergang",
     defaultRecoverySeconds: 0,
     hasRecoveryTimer: false,
   },
@@ -127,6 +117,14 @@ type ActiveFocusPrepSession = {
   taskTitle: string | null;
 };
 
+type PlasticityProjectSuggestion = {
+  id: string;
+  title: string;
+  badge: string;
+  color: "zinc" | "sky" | "emerald" | "amber" | "rose" | "violet";
+  dueLabel: string | null;
+};
+
 export default function PlasticityPage() {
   const router = useRouter();
   const spacePressTimerRef = useRef<number | null>(null);
@@ -150,10 +148,12 @@ export default function PlasticityPage() {
     useState(30);
   const [isFocusPrepEnabled, setIsFocusPrepEnabled] = useState(true);
   const [timerName, setTimerName] = useState("Plasticity");
+  const [shouldAddTaskToCalendar, setShouldAddTaskToCalendar] = useState(false);
+  const [calendarReviewInterval, setCalendarReviewInterval] =
+    useState<ReviewInterval>("spaced");
   const [showProjectSuggestions, setShowProjectSuggestions] = useState(false);
   const [showSettingsProjectSuggestions, setShowSettingsProjectSuggestions] =
     useState(false);
-  const [mainView, setMainView] = useState<"timer" | "eisenhower">("timer");
   const [eisenhowerTodos, setEisenhowerTodos] = useState<EisenhowerTodo[]>([]);
   const [learningTopics, setLearningTopics] = useState<LearningTopic[]>([]);
   const [isReviewCalendarVisible, setIsReviewCalendarVisible] = useState(false);
@@ -192,28 +192,44 @@ export default function PlasticityPage() {
   const selectedActivityCount = allowedActivityOptions.length;
   const formattedTime = formatSeconds(remainingSeconds);
   const formattedRecoveryTime = formatSeconds(recoveryRemainingSeconds);
-  const activeEisenhowerTodos = useMemo(
-    () => eisenhowerTodos.filter((todo) => !todo.isDone),
-    [eisenhowerTodos],
-  );
   const projectSuggestions = useMemo(() => {
     const normalizedQuery = timerName.trim().toLowerCase();
     const seenProjects = new Set<string>();
+    const suggestions: PlasticityProjectSuggestion[] = [
+      ...learningTopics
+        .filter((topic) => !topic.schedule.isCompleted)
+        .map((topic) => ({
+          id: topic.id,
+          title: topic.title,
+          badge:
+            topic.entryType === "Spaced Repetition"
+              ? "Spaced"
+              : "Vorhaben",
+          color:
+            topic.entryType === "Spaced Repetition"
+              ? ("sky" as const)
+              : ("emerald" as const),
+          dueLabel: getCalendarDueLabel(topic),
+        })),
+      ...eisenhowerTodos
+        .filter((todo) => !todo.isDone)
+        .map((todo) => ({
+          id: todo.id,
+          title: todo.title,
+          badge: todo.itemType,
+          color: todo.color,
+          dueLabel: null,
+        })),
+    ];
 
-    return eisenhowerTodos
-      .filter((todo) =>
+    return suggestions
+      .filter((suggestion) =>
         normalizedQuery
-          ? todo.title.toLowerCase().includes(normalizedQuery)
+          ? suggestion.title.toLowerCase().includes(normalizedQuery)
           : true,
       )
-      .sort((firstTodo, secondTodo) => {
-        const firstDate = firstTodo.completedAt ?? firstTodo.createdAt;
-        const secondDate = secondTodo.completedAt ?? secondTodo.createdAt;
-
-        return new Date(secondDate).getTime() - new Date(firstDate).getTime();
-      })
-      .filter((todo) => {
-        const projectKey = todo.title.trim().toLowerCase();
+      .filter((suggestion) => {
+        const projectKey = suggestion.title.trim().toLowerCase();
 
         if (!projectKey || seenProjects.has(projectKey)) {
           return false;
@@ -223,7 +239,7 @@ export default function PlasticityPage() {
         return true;
       })
       .slice(0, 6);
-  }, [eisenhowerTodos, timerName]);
+  }, [eisenhowerTodos, learningTopics, timerName]);
   const upcomingReviews = useMemo(
     () => {
       const today = toDateKey(new Date());
@@ -265,6 +281,7 @@ export default function PlasticityPage() {
       return;
     }
 
+    vibrateDevice(WORK_TO_RECOVERY_VIBRATION_PATTERN);
     setSelectedActivity(nextActivity);
     setPhase("recovery");
     setMessage(null);
@@ -660,6 +677,7 @@ export default function PlasticityPage() {
           recoveryDurationSeconds,
         );
       }
+      vibrateDevice(RECOVERY_DONE_VIBRATION_PATTERN);
       resetFlow(getRandomPraise());
     }, 1000);
 
@@ -872,7 +890,7 @@ export default function PlasticityPage() {
     });
   }
 
-  function selectProject(todo: EisenhowerTodo) {
+  function selectProject(todo: Pick<PlasticityProjectSuggestion, "id" | "title">) {
     activeTaskRef.current = {
       id: todo.id,
       title: todo.title,
@@ -1016,6 +1034,36 @@ export default function PlasticityPage() {
     });
   }
 
+  function addTimerTaskToCalendar(title: string) {
+    const normalizedTitle = title.trim().toLowerCase();
+    const existingTopic = learningTopics.find(
+      (topic) =>
+        !topic.schedule.isCompleted &&
+        topic.title.trim().toLowerCase() === normalizedTitle,
+    );
+
+    if (existingTopic) {
+      return existingTopic;
+    }
+
+    const nextTopic = createLearningTopic({
+      title,
+      description: "Aus dem Plasticity-Haupttimer erstellt.",
+      tags: "Plasticity",
+      goal: "Projekt",
+      startDate: toDateKey(new Date()),
+      deadline: "",
+      reviewInterval: calendarReviewInterval,
+      reviewRepetitionCount: getDefaultReviewCount(calendarReviewInterval),
+    });
+    const nextTopics = [nextTopic, ...learningTopics];
+
+    setLearningTopics(nextTopics);
+    writeLearningTopics(nextTopics);
+
+    return nextTopic;
+  }
+
   function startTimer() {
     if (selectedActivityCount === 0) {
       setMessage("Waehle mindestens eine Aktivitaet aus.");
@@ -1024,6 +1072,15 @@ export default function PlasticityPage() {
     }
 
     const trimmedTimerName = timerName.trim() || "Plasticity";
+
+    if (shouldAddTaskToCalendar) {
+      const calendarTopic = addTimerTaskToCalendar(trimmedTimerName);
+      activeTaskRef.current = {
+        id: calendarTopic.id,
+        title: calendarTopic.title,
+      };
+    }
+
     activeTaskRef.current = activeTaskRef.current ?? {
       id: null,
       title: trimmedTimerName,
@@ -1062,7 +1119,7 @@ export default function PlasticityPage() {
   function skipRecovery() {
     setIsRecoveryRunning(false);
     setShowSkipDialog(false);
-    resetFlow("Alles gut. Du bist wieder bereit fuer die naechste Runde.");
+    resetFlow("Alles gut. Du bist wieder bereit für die naechste Runde.");
   }
 
   if (isLoading) {
@@ -1139,25 +1196,6 @@ export default function PlasticityPage() {
                   </button>
                   <button
                     type="button"
-                    aria-label={
-                      mainView === "timer"
-                        ? "Matrix anzeigen"
-                        : "Matrix ausblenden"
-                    }
-                    title={
-                      mainView === "timer"
-                        ? "Matrix anzeigen"
-                        : "Matrix ausblenden"
-                    }
-                    onClick={() =>
-                      setMainView(mainView === "timer" ? "eisenhower" : "timer")
-                    }
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
-                  >
-                    {mainView === "timer" ? <MatrixIcon /> : <TimerIcon />}
-                  </button>
-                  <button
-                    type="button"
                     aria-label="Einstellungen oeffnen"
                     title="Einstellungen"
                     onClick={() => setShowSettings(true)}
@@ -1201,17 +1239,60 @@ export default function PlasticityPage() {
                         <span className="truncate font-medium text-zinc-900">
                           {todo.title}
                         </span>
-                        <span
-                          className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${getMiniTypeBadgeClass(
-                            todo.color,
-                          )}`}
-                        >
-                          {todo.itemType}
+                        <span className="flex shrink-0 items-center gap-2">
+                          {todo.dueLabel && (
+                            <span className="rounded bg-red-100 px-2 py-1 text-xs font-semibold text-red-800">
+                              {todo.dueLabel}
+                            </span>
+                          )}
+                          <span
+                            className={`rounded px-2 py-1 text-xs font-semibold ${getMiniTypeBadgeClass(
+                              todo.color,
+                            )}`}
+                          >
+                            {todo.badge}
+                          </span>
                         </span>
                       </button>
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <label className="flex items-center gap-2 text-sm font-medium text-zinc-800">
+                    <input
+                      type="checkbox"
+                      checked={shouldAddTaskToCalendar}
+                      onChange={(event) =>
+                        setShouldAddTaskToCalendar(event.target.checked)
+                      }
+                      className="h-4 w-4 accent-zinc-950"
+                    />
+                    Zum Kalender hinzufuegen
+                  </label>
+
+                  <label className="text-sm font-medium text-zinc-700">
+                    Intervall
+                    <select
+                      value={calendarReviewInterval}
+                      onChange={(event) =>
+                        setCalendarReviewInterval(
+                          event.target.value as ReviewInterval,
+                        )
+                      }
+                      disabled={!shouldAddTaskToCalendar}
+                      className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-zinc-950 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400 sm:ml-2 sm:mt-0 sm:w-auto"
+                    >
+                      {REVIEW_INTERVAL_OPTIONS.map((interval) => (
+                        <option key={interval.value} value={interval.value}>
+                          {interval.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
 
               {isReviewCalendarVisible && (
@@ -1248,71 +1329,13 @@ export default function PlasticityPage() {
                 </button>
               </div>
 
-              {mainView === "eisenhower" && (
-                <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                      Eisenhower Mini
-                    </p>
-                    <p className="text-sm font-semibold tabular-nums text-zinc-900">
-                      {formattedTime}
-                    </p>
-                  </div>
-
-                  <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
-                    <div className="grid grid-cols-1 sm:grid-cols-2">
-                      {MINI_QUADRANTS.map((quadrant) => {
-                        const quadrantTodos = activeEisenhowerTodos.filter(
-                          (todo) => todo.quadrant === quadrant.id,
-                        );
-                        const borderClass =
-                          quadrant.id === "urgent-important"
-                            ? "border-b border-zinc-200 sm:border-r"
-                            : quadrant.id === "not-urgent-important"
-                              ? "border-b border-zinc-200"
-                              : quadrant.id === "urgent-not-important"
-                                ? "border-b border-zinc-200 sm:border-r sm:border-b-0"
-                                : "";
-
-                        return (
-                          <div
-                            key={quadrant.id}
-                            className={`min-h-28 p-3 ${borderClass}`}
-                          >
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                              {quadrant.title}
-                            </p>
-                            <div className="mt-2 space-y-1">
-                              {quadrantTodos.slice(0, 3).map((todo) => (
-                                <button
-                                  key={todo.id}
-                                  type="button"
-                                  onClick={() => selectProject(todo)}
-                                  className={`block w-full truncate rounded border px-2 py-1 text-left text-xs font-medium transition ${
-                                    timerName.trim() === todo.title
-                                      ? "border-zinc-950 bg-zinc-950 text-white"
-                                      : getMiniTodoColorClass(todo.color)
-                                  }`}
-                                  title={getMiniTodoTooltip(todo)}
-                                >
-                                  {todo.title} · {todo.itemType}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           </>
         )}
 
         {phase === "recovery" && selectedActivity && (
           <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
-            <div className="flex items-start justify-between gap-4">
+            <div className="relative text-center">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
                 Recovery
               </p>
@@ -1322,15 +1345,15 @@ export default function PlasticityPage() {
                   aria-label="Recovery-Einstellungen oeffnen"
                   title="Recovery-Einstellungen"
                   onClick={() => setShowRecoverySettings(true)}
-                  className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
+                  className="absolute right-0 top-0 flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-900 transition hover:border-zinc-950"
                 >
                   <SettingsIcon />
                 </button>
               )}
+              <h2 className="mx-auto mt-3 max-w-xl text-2xl font-semibold tracking-tight">
+                {selectedActivity.prompt}
+              </h2>
             </div>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-              {selectedActivity.prompt}
-            </h2>
 
             {selectedActivity.hasRecoveryTimer ? (
               <>
@@ -1346,6 +1369,7 @@ export default function PlasticityPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    vibrateDevice(RECOVERY_DONE_VIBRATION_PATTERN);
                     resetFlow(getRandomPraise());
                   }}
                   className="flex h-11 flex-1 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
@@ -1430,12 +1454,19 @@ export default function PlasticityPage() {
                           <span className="truncate font-medium text-zinc-900">
                             {todo.title}
                           </span>
-                          <span
-                            className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${getMiniTypeBadgeClass(
-                              todo.color,
-                            )}`}
-                          >
-                            {todo.itemType}
+                          <span className="flex shrink-0 items-center gap-2">
+                            {todo.dueLabel && (
+                              <span className="rounded bg-red-100 px-2 py-1 text-xs font-semibold text-red-800">
+                                {todo.dueLabel}
+                              </span>
+                            )}
+                            <span
+                              className={`rounded px-2 py-1 text-xs font-semibold ${getMiniTypeBadgeClass(
+                                todo.color,
+                              )}`}
+                            >
+                              {todo.badge}
+                            </span>
                           </span>
                         </button>
                       ))}
@@ -1787,37 +1818,32 @@ function formatReviewDate(date: string) {
   });
 }
 
-function getMiniTodoTooltip(todo: EisenhowerTodo) {
-  const subtasks = todo.subtasks
-    .slice(0, 4)
-    .map((subtask) => `${subtask.isDone ? "[x]" : "[ ]"} ${subtask.title}`)
-    .join("\n");
+function getCalendarDueLabel(topic: LearningTopic) {
+  const nextReview = getProjectedReviews(topic)[0];
 
-  return [todo.description, subtasks].filter(Boolean).join("\n\n");
-}
-
-function getMiniTodoColorClass(color: EisenhowerTodo["color"]) {
-  if (color === "sky") {
-    return "border-sky-200 bg-sky-50 text-sky-950 hover:border-sky-400";
+  if (!nextReview) {
+    return null;
   }
 
-  if (color === "emerald") {
-    return "border-emerald-200 bg-emerald-50 text-emerald-950 hover:border-emerald-400";
+  const today = new Date(`${toDateKey(new Date())}T00:00:00`);
+  const reviewDate = new Date(`${nextReview.date}T00:00:00`);
+  const daysUntilDue = Math.round(
+    (reviewDate.getTime() - today.getTime()) / 86_400_000,
+  );
+
+  if (daysUntilDue < 0 || daysUntilDue > 5) {
+    return null;
   }
 
-  if (color === "amber") {
-    return "border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-400";
+  if (daysUntilDue === 0) {
+    return "heute faellig";
   }
 
-  if (color === "rose") {
-    return "border-rose-200 bg-rose-50 text-rose-950 hover:border-rose-400";
+  if (daysUntilDue === 1) {
+    return "morgen faellig";
   }
 
-  if (color === "violet") {
-    return "border-violet-200 bg-violet-50 text-violet-950 hover:border-violet-400";
-  }
-
-  return "border-zinc-100 bg-zinc-50 text-zinc-800 hover:border-zinc-300";
+  return `in ${daysUntilDue} Tagen`;
 }
 
 function getMiniTypeBadgeClass(color: EisenhowerTodo["color"]) {
@@ -1852,6 +1878,18 @@ function toDateKey(date: Date) {
   ].join("-");
 }
 
+function getDefaultReviewCount(interval: ReviewInterval) {
+  if (interval === "daily") {
+    return "14";
+  }
+
+  if (interval === "weekly") {
+    return "8";
+  }
+
+  return "6";
+}
+
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -1878,6 +1916,14 @@ function playPlasticityEndSound() {
   void audio.play().catch(() => {
     // Browsers may block audio if the timer was restored without a user gesture.
   });
+}
+
+function vibrateDevice(pattern: VibratePattern) {
+  if (typeof window === "undefined" || !window.navigator.vibrate) {
+    return;
+  }
+
+  window.navigator.vibrate(pattern);
 }
 
 function playRecoveryAmbientSound(audioRef: RefObject<HTMLAudioElement | null>) {
@@ -2265,44 +2311,6 @@ function NatureWalkIcon() {
       <path d="M12 4v5" />
       <path d="M9 7c-2.5-.5-3.5-2-4-4 2.5.4 4 1.6 4 4Z" />
       <path d="M15 7c2.5-.5 3.5-2 4-4-2.5.4-4 1.6-4 4Z" />
-    </svg>
-  );
-}
-
-function MatrixIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M4 4h16v16H4z" />
-      <path d="M12 4v16" />
-      <path d="M4 12h16" />
-    </svg>
-  );
-}
-
-function TimerIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M10 2h4" />
-      <path d="M12 14V8" />
-      <path d="M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z" />
     </svg>
   );
 }

@@ -6,9 +6,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "@/app/app-header";
 import { hasDemoOrSupabaseSession, isDemoMode } from "@/lib/demo-auth";
 import {
-  calculateLearningStreak,
   getClampedReviewRepetitionCount,
+  getProjectedReviews,
   getTopicReviewState,
+  createLearningTopic,
   readLearningTopics,
   toDateInputValue,
   writeLearningTopics,
@@ -16,6 +17,7 @@ import {
   type LearningResourceDraft,
   type LearningResourceFile,
   type LearningTopic,
+  type LearningTopicDraft,
 } from "@/lib/learning";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 
@@ -79,8 +81,8 @@ export default function LearningPage() {
         setCalendarDate(parseDateInputValue(today));
         setMessage(
           hasSeedTopic
-            ? "Test-Review fuer heute ist bereits vorhanden."
-            : "Test-Review fuer heute angelegt.",
+            ? "Test-Review für heute ist bereits vorhanden."
+            : "Test-Review für heute angelegt.",
         );
       }
 
@@ -133,9 +135,8 @@ export default function LearningPage() {
     return {
       todayCount,
       overdueCount,
-      activeTopics: topics.filter((topic) => !topic.schedule.isCompleted)
+      activeTopics: topics.filter((topic) => getProjectedReviews(topic).length > 0)
         .length,
-      streak: calculateLearningStreak(topics),
     };
   }, [topics]);
 
@@ -148,6 +149,28 @@ export default function LearningPage() {
         topic.schedule.nextReviewDate,
       )} geplant.`,
     );
+  }
+
+  function createCalendarTopic(
+    draft: LearningTopicDraft,
+    resourceDraft: LearningResourceDraft | null,
+  ) {
+    const topic = createLearningTopic(draft);
+    const calendarTopic: LearningTopic = {
+      ...topic,
+      resources: resourceDraft
+        ? [buildResource(topic.id, resourceDraft, null)]
+        : topic.resources,
+      schedule: {
+        ...topic.schedule,
+        nextReviewDate: draft.startDate,
+      },
+    };
+
+    setTopics((currentTopics) => [calendarTopic, ...currentTopics]);
+    setSelectedTopicId(calendarTopic.id);
+    setCalendarDate(parseDateInputValue(draft.startDate));
+    setMessage(`Eintrag am ${formatDisplayDate(draft.startDate)} erstellt.`);
   }
 
   function selectTopic(topicId: string) {
@@ -271,11 +294,71 @@ export default function LearningPage() {
           ? {
               ...topic,
               reviewRepetitionCount: getClampedReviewRepetitionCount(count),
+              deletedReviewKeys: [],
+              schedule: {
+                ...topic.schedule,
+                isCompleted: false,
+              },
               updatedAt: new Date().toISOString(),
             }
           : topic,
       ),
     );
+  }
+
+  function deleteProjectedReview(topicId: string, reviewKey: string) {
+    setTopics((currentTopics) =>
+      currentTopics.map((topic) => {
+        if (topic.id !== topicId) {
+          return topic;
+        }
+
+        const deletedReviewKeys = Array.from(
+          new Set([...(topic.deletedReviewKeys ?? []), reviewKey]),
+        );
+        const nextTopic = {
+          ...topic,
+          deletedReviewKeys,
+          updatedAt: new Date().toISOString(),
+        };
+
+        return {
+          ...nextTopic,
+          schedule: {
+            ...nextTopic.schedule,
+            isCompleted: getProjectedReviews(nextTopic).length === 0,
+          },
+        };
+      }),
+    );
+    setMessage("Wiederholung geloescht.");
+  }
+
+  function deleteAllProjectedReviews(topicId: string) {
+    setTopics((currentTopics) =>
+      currentTopics.map((topic) => {
+        if (topic.id !== topicId) {
+          return topic;
+        }
+
+        const reviewKeys = getProjectedReviews(topic).map(
+          (review) => review.reviewKey,
+        );
+
+        return {
+          ...topic,
+          deletedReviewKeys: Array.from(
+            new Set([...(topic.deletedReviewKeys ?? []), ...reviewKeys]),
+          ),
+          schedule: {
+            ...topic.schedule,
+            isCompleted: true,
+          },
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+    setMessage("Alle geplanten Wiederholungen geloescht.");
   }
 
   if (isLoading) {
@@ -289,15 +372,22 @@ export default function LearningPage() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-950">
-      <section className="mx-auto w-full max-w-6xl">
-        <AppHeader title="Spaced Repetition" />
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#eef6ff_0,#fafafa_34%,#f4f4f5_100%)] px-4 py-10 text-zinc-950">
+      <section className="mx-auto w-full max-w-7xl">
+        <AppHeader title="Kalender" />
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <SummaryTile label="Reviews heute" value={summary.todayCount} />
-          <SummaryTile label="Ueberfaellig" value={summary.overdueCount} />
-          <SummaryTile label="Aktive Themen" value={summary.activeTopics} />
-          <SummaryTile label="Lernstreak" value={`${summary.streak} Tage`} />
+        <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-zinc-200/80 bg-white/90 shadow-sm shadow-zinc-200/60 backdrop-blur sm:grid-cols-3">
+          <SummaryTile
+            label="Geplante Wiederholungen heute"
+            value={summary.todayCount}
+            hasDivider
+          />
+          <SummaryTile
+            label="Ueberfaellige Wiederholungen"
+            value={summary.overdueCount}
+            hasDivider
+          />
+          <SummaryTile label="Aktive Vorhaben" value={summary.activeTopics} />
         </div>
 
         {message && (
@@ -306,8 +396,8 @@ export default function LearningPage() {
           </div>
         )}
 
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
-          <div className="space-y-6">
+        <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[360px_1fr]">
+          <div className="space-y-5 xl:sticky xl:top-24 xl:self-start">
             <TodayReviews
               topics={topics}
               selectedTopicId={selectedTopicId}
@@ -322,7 +412,7 @@ export default function LearningPage() {
             <TopicForm onCreateTopic={createTopic} />
           </div>
 
-          <div ref={calendarSectionRef} className="scroll-mt-6 space-y-6">
+          <div ref={calendarSectionRef} className="min-w-0 scroll-mt-6 space-y-6">
             <ReviewCalendar
               topics={topics}
               selectedTopicId={selectedTopicId}
@@ -330,6 +420,7 @@ export default function LearningPage() {
               calendarDate={calendarDate}
               onSelectTopic={selectTopic}
               onOpenTopic={openTopicOverlay}
+              onCreateTopic={createCalendarTopic}
               onChangeViewMode={setCalendarViewMode}
               onChangeCalendarDate={setCalendarDate}
             />
@@ -343,6 +434,8 @@ export default function LearningPage() {
           onUpdateResource={updateResource}
           onOpenResource={openResource}
           onUpdateReviewRepetitionCount={updateReviewRepetitionCount}
+          onDeleteProjectedReview={deleteProjectedReview}
+          onDeleteAllProjectedReviews={deleteAllProjectedReviews}
         />
       </section>
     </main>
@@ -352,15 +445,22 @@ export default function LearningPage() {
 type SummaryTileProps = {
   label: string;
   value: number | string;
+  hasDivider?: boolean;
 };
 
-function SummaryTile({ label, value }: SummaryTileProps) {
+function SummaryTile({ label, value, hasDivider = false }: SummaryTileProps) {
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+    <div
+      className={`relative p-5 ${
+        hasDivider
+          ? "after:absolute after:bottom-0 after:left-5 after:right-5 after:h-px after:bg-zinc-200 sm:after:bottom-5 sm:after:left-auto sm:after:right-0 sm:after:top-5 sm:after:h-auto sm:after:w-px"
+          : ""
+      }`}
+    >
       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
         {label}
       </p>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950">
+      <p className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950">
         {value}
       </p>
     </div>
@@ -386,7 +486,7 @@ function createDueReviewSeedTopic(today: string): LearningTopic {
   return {
     id: topicId,
     title: "Test Review Heute",
-    description: "Testthema fuer die Plasticity Review-Vorschau.",
+    description: "Testthema für die Plasticity Review-Vorschau.",
     tags: ["test"],
     goal: "Verstehen",
     startDate: today,
@@ -399,7 +499,11 @@ function createDueReviewSeedTopic(today: string): LearningTopic {
       nextReviewDate: today,
       isCompleted: false,
     },
+    reviewInterval: "spaced",
     reviewRepetitionCount: 6,
+    entryType: "Vorhaben",
+    deckNames: [],
+    deletedReviewKeys: [],
     recallQuestions: [
       "Was ist die Kernidee?",
       "Was kannst du ohne Notizen wiedergeben?",

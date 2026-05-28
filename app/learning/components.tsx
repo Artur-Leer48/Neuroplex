@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import {
+  REVIEW_INTERVAL_DAYS,
   completeReview,
   countRepeatedDays,
   createLearningResource,
@@ -10,7 +12,7 @@ import {
   getProjectedReviews,
   getTopicReviewState,
   toDateInputValue,
-  type LearningGoal,
+  type LearningEntryType,
   type LearningResource,
   type LearningResourceDraft,
   type LearningResourceFile,
@@ -18,15 +20,10 @@ import {
   type LearningTopicDraft,
   type ResourceStatus,
   type ResourceType,
+  type ReviewInterval,
   type ReviewRating,
 } from "@/lib/learning";
 
-const GOALS: LearningGoal[] = [
-  "Verstehen",
-  "Auswendig lernen",
-  "Pruefung",
-  "Projekt",
-];
 const RESOURCE_TYPES: ResourceType[] = [
   "Buch",
   "Artikel",
@@ -42,76 +39,131 @@ const RESOURCE_STATUS: ResourceStatus[] = [
   "in Bearbeitung",
   "abgeschlossen",
 ];
+const MAX_RESOURCE_FILE_SIZE = 25 * 1024 * 1024;
+const ALLOWED_RESOURCE_FILE_TYPES = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "audio/mpeg",
+  "audio/wav",
+  "video/mp4",
+  "text/csv",
+  "text/markdown",
+  "text/plain",
+]);
+const BLOCKED_RESOURCE_FILE_EXTENSIONS = new Set([
+  "bat",
+  "cmd",
+  "com",
+  "exe",
+  "html",
+  "hta",
+  "js",
+  "mjs",
+  "msi",
+  "ps1",
+  "scr",
+  "sh",
+  "vbs",
+]);
+const RESOURCE_FILE_ACCEPT = [
+  ".csv",
+  ".doc",
+  ".docx",
+  ".gif",
+  ".jpeg",
+  ".jpg",
+  ".md",
+  ".mp3",
+  ".mp4",
+  ".pdf",
+  ".png",
+  ".ppt",
+  ".pptx",
+  ".txt",
+  ".wav",
+  ".webp",
+  ".xls",
+  ".xlsx",
+].join(",");
+const REVIEW_INTERVALS: Array<{
+  value: ReviewInterval;
+  label: string;
+}> = [
+  { value: "spaced", label: "Spaced Repetition" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+];
+const ENTRY_TYPES: LearningEntryType[] = ["Vorhaben", "Spaced Repetition"];
 
 type TopicFormProps = {
   onCreateTopic: (topic: LearningTopic) => void;
 };
 
 export function TopicForm({ onCreateTopic }: TopicFormProps) {
+  const today = toDateInputValue(new Date());
   const [draft, setDraft] = useState<LearningTopicDraft>({
     title: "",
     description: "",
     tags: "",
-    goal: "Verstehen",
-    startDate: toDateInputValue(new Date()),
-    deadline: "",
+    goal: "Projekt",
+    startDate: today,
+    deadline: getDeadlineForRepetitionCount(today, 6, "spaced"),
+    reviewInterval: "spaced",
     reviewRepetitionCount: "6",
+    entryType: "Vorhaben",
+    deckNames: "",
   });
   const [error, setError] = useState<string | null>(null);
+  const [isDescriptionOpen, setIsDescriptionOpen] = useState(false);
 
   function submitTopic(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!draft.title.trim()) {
-      setError("Titel ist erforderlich.");
+      setError("Bezeichnung ist erforderlich.");
       return;
     }
 
-    if (draft.deadline && draft.deadline < draft.startDate) {
-      setError("Die Deadline darf nicht vor dem Startdatum liegen.");
-      return;
-    }
-
-    if (
-      !Number.isFinite(Number(draft.reviewRepetitionCount)) ||
-      Number(draft.reviewRepetitionCount) < 1
-    ) {
-      setError("Plane mindestens eine Wiederholung.");
-      return;
-    }
-
-    onCreateTopic(createLearningTopic(draft));
+    onCreateTopic(createLearningTopic(normalizeTopicPlan(draft)));
+    const resetStartDate = toDateInputValue(new Date());
     setDraft({
       title: "",
       description: "",
       tags: "",
-      goal: "Verstehen",
-      startDate: toDateInputValue(new Date()),
-      deadline: "",
+      goal: "Projekt",
+      startDate: resetStartDate,
+      deadline: getDeadlineForRepetitionCount(resetStartDate, 6, "spaced"),
+      reviewInterval: "spaced",
       reviewRepetitionCount: "6",
+      entryType: "Vorhaben",
+      deckNames: "",
     });
     setError(null);
+    setIsDescriptionOpen(false);
   }
 
   return (
     <form
       onSubmit={submitTopic}
-      className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm"
+      className="rounded-xl border border-zinc-200/80 bg-white/95 p-5 shadow-sm shadow-zinc-200/60"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-            Schedule Repetition
-          </p>
-          <h2 className="mt-2 text-xl font-semibold tracking-tight">
-            Wiederholung planen
-          </h2>
-        </div>
+      <div className="mb-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+          Neues Vorhaben
+        </p>
       </div>
-
-      <div className="mt-5 grid grid-cols-1 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         <label className="block text-sm font-medium text-zinc-700">
-          Titel
+          Bezeichnung
           <input
             value={draft.title}
             onChange={(event) =>
@@ -121,108 +173,163 @@ export function TopicForm({ onCreateTopic }: TopicFormProps) {
           />
         </label>
 
-        <label className="block text-sm font-medium text-zinc-700">
-          Beschreibung
-          <textarea
-            value={draft.description}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                description: event.target.value,
-              }))
-            }
-            rows={3}
-            className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-          />
-        </label>
-
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {isDescriptionOpen ? (
           <label className="block text-sm font-medium text-zinc-700">
-            Kategorie / Tags
-            <input
-              value={draft.tags}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, tags: event.target.value }))
-              }
-              placeholder="Neuro, Mathe, Projekt"
-              className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-            />
-          </label>
-
-          <label className="block text-sm font-medium text-zinc-700">
-            Ziel
-            <select
-              value={draft.goal}
+            Beschreibung
+            <textarea
+              autoFocus
+              value={draft.description}
               onChange={(event) =>
                 setDraft((current) => ({
                   ...current,
-                  goal: event.target.value as LearningGoal,
+                  description: event.target.value,
                 }))
               }
+              rows={3}
               className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-            >
-              {GOALS.map((goal) => (
-                <option key={goal}>{goal}</option>
-              ))}
-            </select>
+            />
           </label>
-        </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setIsDescriptionOpen(true)}
+            className="rounded-md border border-zinc-200 bg-zinc-100 px-3 py-2 text-left text-sm font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-zinc-50"
+          >
+            Klicken um Beschreibung hinzuzufuegen
+          </button>
+        )}
+
+        <label className="block text-sm font-medium text-zinc-700">
+          Typ
+          <select
+            value={draft.entryType ?? "Vorhaben"}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                entryType: event.target.value as LearningEntryType,
+              }))
+            }
+            className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+          >
+            {ENTRY_TYPES.map((type) => (
+              <option key={type}>{type}</option>
+            ))}
+          </select>
+        </label>
+
+        {(draft.entryType ?? "Vorhaben") === "Spaced Repetition" && (
+          <label className="block text-sm font-medium text-zinc-700">
+            Decks
+            <input
+              value={draft.deckNames ?? ""}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  deckNames: event.target.value,
+                }))
+              }
+              placeholder="Neuroanatomie, Mathe Beweise"
+              className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+            />
+          </label>
+        )}
+
+        <label className="block text-sm font-medium text-zinc-700">
+          Projekt
+          <input
+            value={draft.tags}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, tags: event.target.value }))
+            }
+            placeholder="Leer lassen für eigenes Projekt"
+            className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+          />
+        </label>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <label className="block text-sm font-medium text-zinc-700">
             Startdatum
-            <input
-              type="date"
+            <GermanDateInput
+              key={`start-${draft.startDate}`}
               value={draft.startDate}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  startDate: event.target.value,
-                }))
+              onChange={(value) =>
+                setDraft((current) =>
+                  applyTopicPlanFromRepetitionCount({
+                    ...current,
+                    startDate: value,
+                  }),
+                )
               }
-              className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              required
             />
           </label>
 
           <label className="block text-sm font-medium text-zinc-700">
-            Deadline
-            <input
-              type="date"
+            Enddatum
+            <GermanDateInput
+              key={`deadline-${draft.deadline}`}
               value={draft.deadline}
+              onChange={(value) =>
+                setDraft((current) =>
+                  applyTopicPlanFromDeadline({
+                    ...current,
+                    deadline: value,
+                  }),
+                )
+              }
+            />
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block text-sm font-medium text-zinc-700">
+            Intervall
+            <select
+              value={draft.reviewInterval}
               onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  deadline: event.target.value,
-                }))
+                setDraft((current) =>
+                  applyTopicPlanFromRepetitionCount({
+                    ...current,
+                    reviewInterval: event.target.value as ReviewInterval,
+                  }),
+                )
+              }
+              className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+            >
+              {REVIEW_INTERVALS.map((interval) => (
+                <option key={interval.value} value={interval.value}>
+                  {interval.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-sm font-medium text-zinc-700">
+            Wiederholungen
+            <input
+              type="number"
+              min={1}
+              max={36}
+              value={draft.reviewRepetitionCount}
+              onChange={(event) =>
+                setDraft((current) =>
+                  applyTopicPlanFromRepetitionCount({
+                    ...current,
+                    reviewRepetitionCount: event.target.value,
+                  }),
+                )
               }
               className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
             />
           </label>
         </div>
-
-        <label className="block text-sm font-medium text-zinc-700">
-          Wiederholungen
-          <input
-            type="number"
-            min={1}
-            max={36}
-            value={draft.reviewRepetitionCount}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                reviewRepetitionCount: event.target.value,
-              }))
-            }
-            className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-          />
-        </label>
       </div>
 
       {error && <p className="mt-4 text-sm font-medium text-red-700">{error}</p>}
 
       <button
         type="submit"
-        className="mt-5 flex h-10 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+        className="mt-5 flex h-10 w-full items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
       >
         Thema speichern
       </button>
@@ -253,13 +360,15 @@ export function TodayReviews({
     );
 
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+    <div className="rounded-xl border border-zinc-200/80 bg-white/95 p-5 shadow-sm shadow-zinc-200/60">
       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-        Today&apos;s Reviews
+        Heute faellig
       </p>
       <div className="mt-4 space-y-2">
         {dueTopics.length === 0 ? (
-          <p className="text-sm text-zinc-600">Heute ist nichts faellig.</p>
+          <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50/70 p-4 text-sm text-zinc-600">
+            Heute ist nichts faellig.
+          </div>
         ) : (
           dueTopics.map((topic) => {
             const state = getTopicReviewState(topic);
@@ -268,10 +377,10 @@ export function TodayReviews({
                 key={topic.id}
                 type="button"
                 onClick={() => onSelectTopic(topic.id)}
-                className={`w-full rounded-md border px-3 py-3 text-left transition ${
+                className={`w-full rounded-lg border px-3 py-3 text-left transition ${
                   selectedTopicId === topic.id
-                    ? "border-zinc-950 bg-zinc-950 text-white"
-                    : "border-zinc-200 bg-white text-zinc-900 hover:border-zinc-950"
+                    ? "border-zinc-950 bg-zinc-950 text-white shadow-sm"
+                    : "border-zinc-200 bg-white text-zinc-900 hover:border-zinc-300 hover:bg-zinc-50"
                 }`}
               >
                 <span className="block text-sm font-semibold">{topic.title}</span>
@@ -329,12 +438,40 @@ export function ResourceList({
     status: "offen",
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [fileInputKey, setFileInputKey] = useState(0);
   const [editingResourceId, setEditingResourceId] = useState<string | null>(
     null,
   );
   const [editDraft, setEditDraft] = useState<LearningResourceDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  function selectResourceFile(file: File | null) {
+    if (!file) {
+      setSelectedFile(null);
+      return;
+    }
+
+    const fileError = validateResourceFile(file);
+
+    if (fileError) {
+      setSelectedFile(null);
+      setFileInputKey((currentKey) => currentKey + 1);
+      setError(fileError);
+      return;
+    }
+
+    setSelectedFile(file);
+    setError(null);
+  }
+
+  function handleFileDrop(event: React.DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setIsDraggingFile(false);
+
+    const file = event.dataTransfer.files[0] ?? null;
+    selectResourceFile(file);
+  }
 
   async function submitResource(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -344,8 +481,14 @@ export function ResourceList({
       return;
     }
 
-    if (!draft.title.trim() && !selectedFile) {
-      setError("Ressourcen-Titel ist erforderlich.");
+    const resourceTitle =
+      draft.title.trim() ||
+      getResourceTitleFromReference(draft.reference) ||
+      selectedFile?.name ||
+      "";
+
+    if (!resourceTitle) {
+      setError("Ressourcen-Titel oder URL ist erforderlich.");
       return;
     }
 
@@ -353,7 +496,8 @@ export function ResourceList({
       topic.id,
       {
         ...draft,
-        title: draft.title.trim() || selectedFile?.name || "",
+        title: resourceTitle,
+        locator: "",
         type: selectedFile && draft.type !== "Link" ? "Datei" : draft.type,
       },
       selectedFile,
@@ -388,12 +532,20 @@ export function ResourceList({
       return;
     }
 
-    if (!editDraft.title.trim()) {
-      setError("Ressourcen-Titel ist erforderlich.");
+    const resourceTitle =
+      editDraft.title.trim() ||
+      getResourceTitleFromReference(editDraft.reference);
+
+    if (!resourceTitle) {
+      setError("Ressourcen-Titel oder URL ist erforderlich.");
       return;
     }
 
-    onUpdateResource(topic.id, resource.id, editDraft);
+    onUpdateResource(topic.id, resource.id, {
+      ...editDraft,
+      title: resourceTitle,
+      locator: "",
+    });
     setEditingResourceId(null);
     setEditDraft(null);
     setError(null);
@@ -458,11 +610,6 @@ export function ResourceList({
                         )}
                       </div>
                     </div>
-                    {resource.locator && (
-                      <p className="text-xs font-medium text-zinc-600">
-                        {resource.locator}
-                      </p>
-                    )}
                   </div>
                   {resource.reference && (
                     <p className="mt-2 break-words text-xs text-zinc-600">
@@ -581,21 +728,7 @@ export function ResourceList({
               />
             </label>
 
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="block text-sm font-medium text-zinc-700">
-                Kapitel / Zeit / Seite
-                <input
-                  value={draft.locator}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      locator: event.target.value,
-                    }))
-                  }
-                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-                />
-              </label>
-
+            <div className="mt-3">
               <label className="block text-sm font-medium text-zinc-700">
                 Status
                 <select
@@ -617,14 +750,44 @@ export function ResourceList({
 
             <label className="mt-3 block text-sm font-medium text-zinc-700">
               Datei hochladen
-              <input
-                key={fileInputKey}
-                type="file"
-                onChange={(event) =>
-                  setSelectedFile(event.target.files?.[0] ?? null)
-                }
-                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition file:mr-3 file:rounded file:border-0 file:bg-zinc-100 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-zinc-900 focus:border-zinc-950"
-              />
+              <span
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setIsDraggingFile(true);
+                }}
+                onDragOver={(event) => event.preventDefault()}
+                onDragLeave={(event) => {
+                  event.preventDefault();
+                  setIsDraggingFile(false);
+                }}
+                onDrop={handleFileDrop}
+                className={`mt-2 flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-4 py-5 text-center transition ${
+                  isDraggingFile
+                    ? "border-zinc-950 bg-zinc-100"
+                    : "border-zinc-300 bg-white hover:border-zinc-950"
+                }`}
+              >
+                <span className="text-sm font-semibold text-zinc-900">
+                  Datei hier ablegen oder auswaehlen
+                </span>
+                <span className="mt-1 text-xs text-zinc-500">
+                  PDF, Office, Text, Bilder, Audio oder Video bis 25 MB
+                </span>
+                {selectedFile && (
+                  <span className="mt-2 text-xs font-medium text-zinc-700">
+                    {selectedFile.name} · {formatBytes(selectedFile.size)}
+                  </span>
+                )}
+                <input
+                  key={fileInputKey}
+                  type="file"
+                  accept={RESOURCE_FILE_ACCEPT}
+                  onChange={(event) =>
+                    selectResourceFile(event.target.files?.[0] ?? null)
+                  }
+                  className="sr-only"
+                />
+              </span>
             </label>
 
             {error && (
@@ -657,6 +820,8 @@ function ResourceEditForm({
   onCancel,
   onSave,
 }: ResourceEditFormProps) {
+  const faviconUrl = getFaviconUrl(draft.reference);
+
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -695,6 +860,12 @@ function ResourceEditForm({
 
       <label className="block text-sm font-medium text-zinc-700">
         URL oder Datei-Referenz
+        {faviconUrl && (
+          <span className="mt-2 flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-700">
+            <ResourceFavicon reference={draft.reference} />
+            Icon erkannt
+          </span>
+        )}
         <input
           value={draft.reference}
           onChange={(event) =>
@@ -720,20 +891,7 @@ function ResourceEditForm({
         />
       </label>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="block text-sm font-medium text-zinc-700">
-          Kapitel / Zeit / Seite
-          <input
-            value={draft.locator}
-            onChange={(event) =>
-              onChange((current) =>
-                current ? { ...current, locator: event.target.value } : current,
-              )
-            }
-            className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
-          />
-        </label>
-
+      <div>
         <label className="block text-sm font-medium text-zinc-700">
           Status
           <select
@@ -784,6 +942,10 @@ type ReviewCalendarProps = {
   calendarDate: Date;
   onSelectTopic: (topicId: string) => void;
   onOpenTopic: (topicId: string) => void;
+  onCreateTopic: (
+    topicDraft: LearningTopicDraft,
+    resourceDraft: LearningResourceDraft | null,
+  ) => void;
   onChangeViewMode: (viewMode: "month" | "week") => void;
   onChangeCalendarDate: (date: Date) => void;
 };
@@ -795,9 +957,23 @@ export function ReviewCalendar({
   calendarDate,
   onSelectTopic,
   onOpenTopic,
+  onCreateTopic,
   onChangeViewMode,
   onChangeCalendarDate,
 }: ReviewCalendarProps) {
+  const [quickEntryDate, setQuickEntryDate] = useState<string | null>(null);
+  const [quickEntryDraft, setQuickEntryDraft] = useState<LearningTopicDraft | null>(
+    null,
+  );
+  const [quickResourceDraft, setQuickResourceDraft] =
+    useState<LearningResourceDraft>({
+      type: "Artikel",
+      title: "",
+      reference: "",
+      summary: "",
+      locator: "",
+      status: "offen",
+    });
   const days = useMemo(
     () =>
       viewMode === "month" ? getMonthDays(calendarDate) : getWeekDays(calendarDate),
@@ -807,6 +983,31 @@ export function ReviewCalendar({
     () => topics.flatMap((topic) => getProjectedReviews(topic)),
     [topics],
   );
+  const todayKey = toDateInputValue(new Date());
+  const visibleReviewCount = reviewEvents.filter((review) =>
+    days.some((day) => toDateInputValue(day) === review.date),
+  ).length;
+  const dueReviewCount = reviewEvents.filter((review) => {
+    const state = getReviewEventState(review.date, review.isCompleted);
+
+    return state === "today" || state === "overdue";
+  }).length;
+
+  useEffect(() => {
+    if (!quickEntryDate) {
+      return;
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeQuickEntry();
+      }
+    }
+
+    window.addEventListener("keydown", handleEscape);
+
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [quickEntryDate]);
 
   function shiftCalendar(direction: number) {
     const nextDate = new Date(calendarDate);
@@ -820,66 +1021,152 @@ export function ReviewCalendar({
     onChangeCalendarDate(nextDate);
   }
 
-  return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-            Kalender
-          </p>
-          <h2 className="mt-2 text-xl font-semibold tracking-tight">
-            {calendarDate.toLocaleDateString("de-DE", {
-              month: "long",
-              year: "numeric",
-            })}
-          </h2>
-        </div>
+  function submitQuickEntry(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => shiftCalendar(-1)}
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold transition hover:border-zinc-950"
-          >
-            Zurueck
-          </button>
-          <button
-            type="button"
-            onClick={() => onChangeCalendarDate(new Date())}
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold transition hover:border-zinc-950"
-          >
-            Heute
-          </button>
-          <button
-            type="button"
-            onClick={() => shiftCalendar(1)}
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold transition hover:border-zinc-950"
-          >
-            Weiter
-          </button>
+    if (!quickEntryDate || !quickEntryDraft?.title.trim()) {
+      return;
+    }
+
+    const resourceReference = quickResourceDraft.reference.trim();
+    const resourceTitle =
+      quickResourceDraft.title.trim() ||
+      getResourceTitleFromReference(resourceReference) ||
+      "";
+    const nextResourceDraft =
+      resourceTitle || resourceReference || quickResourceDraft.summary.trim()
+        ? {
+            ...quickResourceDraft,
+            title: resourceTitle || "Ressource",
+            locator: "",
+          }
+        : null;
+
+    onCreateTopic(normalizeTopicPlan(quickEntryDraft), nextResourceDraft);
+    closeQuickEntry();
+  }
+
+  function closeQuickEntry() {
+    setQuickEntryDate(null);
+    setQuickEntryDraft(null);
+    setQuickResourceDraft({
+      type: "Artikel",
+      title: "",
+      reference: "",
+      summary: "",
+      locator: "",
+      status: "offen",
+    });
+  }
+
+  function openQuickEntry(date: string) {
+    setQuickEntryDate(date);
+    setQuickEntryDraft({
+      title: "",
+      description: "",
+      tags: "",
+      goal: "Projekt",
+      startDate: date,
+      deadline: date,
+      reviewInterval: "spaced",
+      reviewRepetitionCount: "1",
+      entryType: "Vorhaben",
+      deckNames: "",
+    });
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white shadow-sm shadow-zinc-200/60">
+      <div className="border-b border-zinc-200/80 bg-[linear-gradient(180deg,#f8fbff_0%,#ffffff_72%)] p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Kalender
+            </p>
+            <div className="mt-2 flex flex-wrap items-end gap-3">
+              <h2 className="text-2xl font-semibold tracking-tight text-zinc-950">
+                {calendarDate.toLocaleDateString("de-DE", {
+                  month: "long",
+                  year: "numeric",
+                })}
+              </h2>
+              <span className="mb-1 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700">
+                {visibleReviewCount} Eintraege
+              </span>
+              {dueReviewCount > 0 && (
+                <span className="mb-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700">
+                  {dueReviewCount} faellig
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-lg"
+              aria-label="Vorheriger Zeitraum"
+              title="Zurueck"
+              onClick={() => shiftCalendar(-1)}
+              className="border-zinc-200 bg-white/80 text-zinc-700 shadow-xs hover:bg-white hover:text-zinc-950"
+            >
+              <ChevronLeftIcon />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => onChangeCalendarDate(new Date())}
+              className="border-zinc-200 bg-white/80 px-4 text-zinc-900 shadow-xs hover:bg-white"
+            >
+              Heute
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-lg"
+              aria-label="Naechster Zeitraum"
+              title="Weiter"
+              onClick={() => shiftCalendar(1)}
+              className="border-zinc-200 bg-white/80 text-zinc-700 shadow-xs hover:bg-white hover:text-zinc-950"
+            >
+              <ChevronRightIcon />
+            </Button>
+          </div>
         </div>
       </div>
 
-      <div className="mt-4 flex w-fit overflow-hidden rounded-md border border-zinc-300">
+      <div className="flex flex-col gap-3 border-b border-zinc-200/80 bg-zinc-50/70 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex w-fit overflow-hidden rounded-lg border border-zinc-200 bg-white p-1 shadow-xs">
         {(["month", "week"] as const).map((mode) => (
           <button
             key={mode}
             type="button"
             onClick={() => onChangeViewMode(mode)}
-            className={`h-9 px-4 text-sm font-semibold ${
-              viewMode === mode ? "bg-zinc-950 text-white" : "bg-white text-zinc-900"
+              className={`h-8 rounded-md px-3 text-sm font-medium transition ${
+                viewMode === mode
+                  ? "bg-zinc-950 text-white shadow-sm"
+                  : "text-zinc-600 hover:bg-sky-50 hover:text-zinc-950"
             }`}
           >
             {mode === "month" ? "Monat" : "Woche"}
           </button>
         ))}
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-medium text-zinc-600">
+          <CalendarLegend label="Heute" tone="emerald" />
+          <CalendarLegend label="Ueberfaellig" tone="red" />
+          <CalendarLegend label="Kommend" tone="sky" />
+          <CalendarLegend label="Abgeschlossen" tone="zinc" />
+        </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-7 border-l border-t border-zinc-200">
+      <div className="grid grid-cols-7 bg-zinc-100/70">
         {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((dayLabel) => (
           <div
             key={dayLabel}
-            className="border-b border-r border-zinc-200 bg-zinc-50 px-2 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500"
+            className="border-b border-r border-zinc-200/80 bg-white/70 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500 last:border-r-0"
           >
             {dayLabel}
           </div>
@@ -889,17 +1176,36 @@ export function ReviewCalendar({
           const dateKey = toDateInputValue(day);
           const dayReviews = reviewEvents.filter((review) => review.date === dateKey);
           const isOutsideMonth = day.getMonth() !== calendarDate.getMonth();
+          const isToday = dateKey === todayKey;
 
           return (
             <div
               key={dateKey}
-              className={`min-h-28 border-b border-r border-zinc-200 p-2 ${
-                isOutsideMonth && viewMode === "month" ? "bg-zinc-50" : "bg-white"
+              onDoubleClick={() => {
+                openQuickEntry(dateKey);
+              }}
+              className={`group min-h-32 border-b border-r border-zinc-200/80 p-2 transition hover:bg-sky-50/40 ${
+                isOutsideMonth && viewMode === "month"
+                  ? "bg-zinc-50/60 text-zinc-400"
+                  : isToday
+                    ? "bg-emerald-50/25 text-zinc-950"
+                    : "bg-white text-zinc-950"
               }`}
             >
-              <p className="text-xs font-semibold text-zinc-500">
-                {day.getDate()}
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={`flex h-6 min-w-6 items-center justify-center rounded-md px-1 text-xs font-semibold ${
+                    isToday
+                      ? "bg-zinc-950 text-white"
+                      : "text-zinc-500 group-hover:text-zinc-950"
+                  }`}
+                >
+                  {day.getDate()}
+                </span>
+                <span className="text-[11px] font-medium text-zinc-300 opacity-0 transition group-hover:opacity-100">
+                  +
+                </span>
+              </div>
               <div className="mt-2 space-y-1">
                 {dayReviews.map((review) => {
                   const topic = topics.find(
@@ -916,15 +1222,18 @@ export function ReviewCalendar({
                       key={`${review.topicId}-${review.date}-${review.sequence}`}
                       type="button"
                       onClick={() => onSelectTopic(review.topicId)}
-                      onDoubleClick={() => onOpenTopic(review.topicId)}
-                      className={`w-full rounded px-2 py-1 text-left text-xs font-semibold transition ${getCalendarColor(
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        onOpenTopic(review.topicId);
+                      }}
+                      className={`w-full rounded-md border px-2 py-1.5 text-left text-xs font-medium shadow-xs transition ${getCalendarEventClass(
                         state,
                         selectedTopicId === review.topicId,
                       )}`}
                     >
-                      {review.topicTitle}
-                      <span className="ml-1 font-normal">
-                        {review.sequence}
+                      <span className="block truncate">{review.topicTitle}</span>
+                      <span className="mt-0.5 block text-[10px] font-medium opacity-70">
+                        Review {review.sequence}
                       </span>
                     </button>
                   );
@@ -935,20 +1244,297 @@ export function ReviewCalendar({
         })}
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium text-zinc-600">
-        <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-800">
-          heute
-        </span>
-        <span className="rounded bg-red-100 px-2 py-1 text-red-800">
-          ueberfaellig
-        </span>
-        <span className="rounded bg-sky-100 px-2 py-1 text-sky-800">
-          kommende Reviews
-        </span>
-        <span className="rounded bg-zinc-200 px-2 py-1 text-zinc-700">
-          abgeschlossen
-        </span>
-      </div>
+      {quickEntryDate && quickEntryDraft && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/45 px-4 py-6 backdrop-blur-sm"
+          onMouseDown={closeQuickEntry}
+        >
+          <form
+            onSubmit={submitQuickEntry}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 text-zinc-950 shadow-2xl shadow-zinc-950/15"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                  Kalendereintrag
+                </p>
+                <h3 className="mt-2 text-xl font-semibold tracking-tight">
+                  {formatDisplayDate(quickEntryDate)}
+                </h3>
+              </div>
+              <button
+                type="button"
+                aria-label="Overlay schliessen"
+                title="Schliessen"
+                onClick={closeQuickEntry}
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-lg font-semibold text-zinc-900 transition hover:border-zinc-950"
+              >
+                x
+              </button>
+            </div>
+
+            <label className="mt-5 block text-sm font-medium text-zinc-700">
+              Bezeichnung
+              <input
+                autoFocus
+                value={quickEntryDraft.title}
+                onChange={(event) =>
+                  setQuickEntryDraft((current) =>
+                    current ? { ...current, title: event.target.value } : current,
+                  )
+                }
+                placeholder="Neue Bezeichnung"
+                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              />
+            </label>
+
+            <label className="mt-4 block text-sm font-medium text-zinc-700">
+              Beschreibung
+              <textarea
+                value={quickEntryDraft.description}
+                onChange={(event) =>
+                  setQuickEntryDraft((current) =>
+                    current
+                      ? { ...current, description: event.target.value }
+                      : current,
+                  )
+                }
+                rows={3}
+                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              />
+            </label>
+
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="block text-sm font-medium text-zinc-700">
+                Projekt
+                <input
+                  value={quickEntryDraft.tags}
+                  onChange={(event) =>
+                    setQuickEntryDraft((current) =>
+                      current ? { ...current, tags: event.target.value } : current,
+                    )
+                  }
+                  placeholder="Leer lassen für eigenes Projekt"
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-zinc-700">
+                Typ
+                <select
+                  value={quickEntryDraft.entryType ?? "Vorhaben"}
+                  onChange={(event) =>
+                    setQuickEntryDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            entryType: event.target.value as LearningEntryType,
+                          }
+                        : current,
+                    )
+                  }
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                >
+                  {ENTRY_TYPES.map((type) => (
+                    <option key={type}>{type}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {(quickEntryDraft.entryType ?? "Vorhaben") ===
+              "Spaced Repetition" && (
+              <label className="mt-4 block text-sm font-medium text-zinc-700">
+                Decks
+                <input
+                  value={quickEntryDraft.deckNames ?? ""}
+                  onChange={(event) =>
+                    setQuickEntryDraft((current) =>
+                      current
+                        ? { ...current, deckNames: event.target.value }
+                        : current,
+                    )
+                  }
+                  placeholder="Neuroanatomie, Mathe Beweise"
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+            )}
+
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="block text-sm font-medium text-zinc-700">
+                Startdatum
+                <GermanDateInput
+                  key={`quick-start-${quickEntryDraft.startDate}`}
+                  value={quickEntryDraft.startDate}
+                  onChange={(value) =>
+                    setQuickEntryDraft((current) =>
+                      current
+                        ? applyTopicPlanFromRepetitionCount({
+                            ...current,
+                            startDate: value,
+                          })
+                        : current,
+                    )
+                  }
+                  required
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-zinc-700">
+                Enddatum
+                <GermanDateInput
+                  key={`quick-deadline-${quickEntryDraft.deadline}`}
+                  value={quickEntryDraft.deadline}
+                  onChange={(value) =>
+                    setQuickEntryDraft((current) =>
+                      current
+                        ? applyTopicPlanFromDeadline({
+                            ...current,
+                            deadline: value,
+                          })
+                        : current,
+                    )
+                  }
+                />
+              </label>
+            </div>
+
+            <label className="mt-4 block text-sm font-medium text-zinc-700">
+              Intervall
+              <select
+                value={quickEntryDraft.reviewInterval}
+                onChange={(event) =>
+                  setQuickEntryDraft((current) =>
+                    current
+                      ? applyTopicPlanFromRepetitionCount({
+                          ...current,
+                          reviewInterval: event.target.value as ReviewInterval,
+                        })
+                      : current,
+                  )
+                }
+                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              >
+                {REVIEW_INTERVALS.map((interval) => (
+                  <option key={interval.value} value={interval.value}>
+                    {interval.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mt-4 block text-sm font-medium text-zinc-700">
+              Wiederholungen
+              <input
+                type="number"
+                min={1}
+                max={36}
+                value={quickEntryDraft.reviewRepetitionCount}
+                onChange={(event) =>
+                  setQuickEntryDraft((current) =>
+                    current
+                      ? applyTopicPlanFromRepetitionCount({
+                          ...current,
+                          reviewRepetitionCount: event.target.value,
+                        })
+                      : current,
+                  )
+                }
+                className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+              />
+            </label>
+
+            <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Ressource hinzufuegen
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm font-medium text-zinc-700">
+                  Typ
+                  <select
+                    value={quickResourceDraft.type}
+                    onChange={(event) =>
+                      setQuickResourceDraft((current) => ({
+                        ...current,
+                        type: event.target.value as ResourceType,
+                      }))
+                    }
+                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                  >
+                    {RESOURCE_TYPES.map((type) => (
+                      <option key={type}>{type}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block text-sm font-medium text-zinc-700">
+                  Titel
+                  <input
+                    value={quickResourceDraft.title}
+                    onChange={(event) =>
+                      setQuickResourceDraft((current) => ({
+                        ...current,
+                        title: event.target.value,
+                      }))
+                    }
+                    placeholder="Optional, sonst aus URL"
+                    className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 block text-sm font-medium text-zinc-700">
+                URL oder Referenz
+                <input
+                  value={quickResourceDraft.reference}
+                  onChange={(event) =>
+                    setQuickResourceDraft((current) => ({
+                      ...current,
+                      reference: event.target.value,
+                    }))
+                  }
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+
+              <label className="mt-3 block text-sm font-medium text-zinc-700">
+                Kurze Zusammenfassung
+                <textarea
+                  value={quickResourceDraft.summary}
+                  onChange={(event) =>
+                    setQuickResourceDraft((current) => ({
+                      ...current,
+                      summary: event.target.value,
+                    }))
+                  }
+                  rows={2}
+                  className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={!quickEntryDraft.title.trim()}
+                className="h-10 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
+              >
+                Speichern
+              </button>
+              <button
+                type="button"
+                onClick={closeQuickEntry}
+                className="h-10 rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1126,36 +1712,77 @@ export function TopicList({
   onSelectTopic,
   onOpenTopic,
 }: TopicListProps) {
+  const activeTopics = topics.filter((topic) => getProjectedReviews(topic).length > 0);
+
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+    <div className="rounded-xl border border-zinc-200/80 bg-white/95 p-5 shadow-sm shadow-zinc-200/60">
       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-        Aktive Themen
+        Uebersicht aktive Vorhaben
       </p>
       <div className="mt-4 space-y-2">
-        {topics.length === 0 ? (
-          <p className="text-sm text-zinc-600">Noch keine Themen.</p>
+        {activeTopics.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50/70 p-4 text-sm text-zinc-600">
+            Keine aktiven Vorhaben.
+          </div>
         ) : (
-          topics.map((topic) => {
+          activeTopics.map((topic) => {
             const state = getTopicReviewState(topic);
+            const primaryResourceUrl = getPrimaryResourceUrl(topic);
+            const isSelected = selectedTopicId === topic.id;
+            const projectLabel = getTopicProjectLabel(topic);
+            const deckLabel =
+              topic.entryType === "Spaced Repetition" && topic.deckNames.length > 0
+                ? ` · Decks: ${topic.deckNames.join(", ")}`
+                : "";
+
             return (
-              <button
+              <div
                 key={topic.id}
-                type="button"
-                onClick={() => onSelectTopic(topic.id)}
-                onDoubleClick={() => onOpenTopic(topic.id)}
-                className={`w-full rounded-md border px-3 py-3 text-left transition ${
-                  selectedTopicId === topic.id
-                    ? "border-zinc-950 bg-zinc-950 text-white"
-                    : "border-zinc-200 bg-white text-zinc-900 hover:border-zinc-950"
+                className={`flex items-start gap-2 rounded-lg border p-2 transition ${
+                  isSelected
+                    ? "border-zinc-950 bg-zinc-950 text-white shadow-sm"
+                    : "border-zinc-200 bg-white text-zinc-900 hover:border-zinc-300 hover:bg-zinc-50"
                 }`}
               >
-                <span className="block text-sm font-semibold">{topic.title}</span>
-                <span className="mt-1 block text-xs text-zinc-500">
-                  {topic.goal} · naechstes Review{" "}
-                  {formatDisplayDate(topic.schedule.nextReviewDate)} ·{" "}
-                  {stateLabel(state)}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectTopic(topic.id)}
+                  onDoubleClick={() => onOpenTopic(topic.id)}
+                  className="min-w-0 flex-1 px-1 py-1 text-left"
+                >
+                  <span
+                    className={`block truncate text-sm font-semibold ${
+                      isSelected ? "text-white" : "text-zinc-950"
+                    }`}
+                  >
+                    {topic.title}
+                  </span>
+                  <span
+                    className={`mt-1 block text-xs ${
+                      isSelected ? "text-zinc-200" : "text-zinc-500"
+                    }`}
+                  >
+                    {projectLabel} · naechstes Review{" "}
+                    {formatDisplayDate(topic.schedule.nextReviewDate)} ·{" "}
+                    {stateLabel(state)}
+                    {deckLabel}
+                  </span>
+                </button>
+
+                {primaryResourceUrl && (
+                  <a
+                    href={primaryResourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Resource für ${topic.title} oeffnen`}
+                    title="Resource oeffnen"
+                    onClick={(event) => event.stopPropagation()}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                  >
+                    <ResourceOpenIcon reference={primaryResourceUrl} />
+                  </a>
+                )}
+              </div>
             );
           })
         )}
@@ -1182,6 +1809,8 @@ type TopicOverviewOverlayProps = {
     mode?: "open" | "download",
   ) => Promise<void> | void;
   onUpdateReviewRepetitionCount: (topicId: string, count: number) => void;
+  onDeleteProjectedReview: (topicId: string, reviewKey: string) => void;
+  onDeleteAllProjectedReviews: (topicId: string) => void;
 };
 
 export function TopicOverviewOverlay({
@@ -1191,7 +1820,25 @@ export function TopicOverviewOverlay({
   onUpdateResource,
   onOpenResource,
   onUpdateReviewRepetitionCount,
+  onDeleteProjectedReview,
+  onDeleteAllProjectedReviews,
 }: TopicOverviewOverlayProps) {
+  useEffect(() => {
+    if (!topic) {
+      return;
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleEscape);
+
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [onClose, topic]);
+
   if (!topic) {
     return null;
   }
@@ -1201,10 +1848,14 @@ export function TopicOverviewOverlay({
   const resourceSummary = summarizeResources(topic);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6"
+      onMouseDown={onClose}
+    >
       <div
         role="dialog"
         aria-modal="true"
+        onMouseDown={(event) => event.stopPropagation()}
         className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-lg bg-white p-6 text-zinc-950 shadow-xl"
       >
         <div className="flex items-start justify-between gap-4">
@@ -1246,6 +1897,8 @@ export function TopicOverviewOverlay({
           />
         </div>
 
+        <MiniFocusSession key={topic.id} topic={topic} />
+
         <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
             Ressourcen Dashboard
@@ -1279,21 +1932,51 @@ export function TopicOverviewOverlay({
         </label>
 
         <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-            Geplante Wiederholungen
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {projectedReviews.map((review) => (
-              <span
-                key={`${review.topicId}-${review.sequence}-${review.date}`}
-                className={`rounded px-2 py-1 text-xs font-semibold ${getCalendarColor(
-                  getReviewEventState(review.date, review.isCompleted),
-                  review.isNextReview,
-                )}`}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Geplante Wiederholungen
+            </p>
+            {projectedReviews.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onDeleteAllProjectedReviews(topic.id)}
+                className="h-8 rounded-md border border-red-200 bg-white px-3 text-xs font-semibold text-red-700 transition hover:border-red-500"
               >
-                {formatDisplayDate(review.date)} - {review.intervalDays}d
-              </span>
-            ))}
+                Alle loeschen
+              </button>
+            )}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {projectedReviews.length === 0 ? (
+              <p className="text-sm text-zinc-600">
+                Keine geplanten Wiederholungen.
+              </p>
+            ) : (
+              projectedReviews.map((review) => (
+                <span
+                  key={`${review.topicId}-${review.reviewKey}`}
+                  className={`inline-flex items-center gap-2 rounded px-2 py-1 text-xs font-semibold ${getCalendarColor(
+                    getReviewEventState(review.date, review.isCompleted),
+                    review.isNextReview,
+                  )}`}
+                >
+                  {formatDisplayDate(review.date)} - {review.intervalDays}d
+                  <button
+                    type="button"
+                    aria-label={`Wiederholung am ${formatDisplayDate(
+                      review.date,
+                    )} loeschen`}
+                    title="Wiederholung loeschen"
+                    onClick={() =>
+                      onDeleteProjectedReview(topic.id, review.reviewKey)
+                    }
+                    className="flex h-5 w-5 items-center justify-center rounded border border-current/30 bg-white/70 text-[11px] leading-none transition hover:bg-white"
+                  >
+                    x
+                  </button>
+                </span>
+              ))
+            )}
           </div>
         </div>
 
@@ -1326,6 +2009,115 @@ function OverviewTile({ label, value }: OverviewTileProps) {
   );
 }
 
+function MiniFocusSession({ topic }: { topic: LearningTopic }) {
+  const [durationSeconds, setDurationSeconds] = useState(25 * 60);
+  const [remainingSeconds, setRemainingSeconds] = useState(25 * 60);
+  const [endAt, setEndAt] = useState<number | null>(null);
+  const isRunning = endAt !== null;
+
+  useEffect(() => {
+    if (!endAt) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      const nextRemainingSeconds = Math.max(
+        0,
+        Math.ceil((endAt - Date.now()) / 1000),
+      );
+
+      setRemainingSeconds(nextRemainingSeconds);
+
+      if (nextRemainingSeconds === 0) {
+        setEndAt(null);
+      }
+    }, 250);
+
+    return () => window.clearInterval(timerId);
+  }, [endAt]);
+
+  function selectDuration(seconds: number) {
+    if (isRunning) {
+      return;
+    }
+
+    setDurationSeconds(seconds);
+    setRemainingSeconds(seconds);
+  }
+
+  function toggleFocusSession() {
+    if (isRunning) {
+      setEndAt(null);
+      return;
+    }
+
+    setEndAt(Date.now() + remainingSeconds * 1000);
+  }
+
+  function resetFocusSession() {
+    setEndAt(null);
+    setRemainingSeconds(durationSeconds);
+  }
+
+  return (
+    <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            Focus Session
+          </p>
+          <p className="mt-2 text-sm font-medium text-zinc-900">{topic.title}</p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {[15, 25, 50].map((minutes) => {
+            const seconds = minutes * 60;
+
+            return (
+              <button
+                key={minutes}
+                type="button"
+                onClick={() => selectDuration(seconds)}
+                disabled={isRunning}
+                className={`h-8 rounded-md border px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                  durationSeconds === seconds
+                    ? "border-zinc-950 bg-zinc-950 text-white"
+                    : "border-zinc-300 bg-white text-zinc-900 hover:border-zinc-950"
+                }`}
+              >
+                {minutes}m
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-4xl font-semibold tabular-nums tracking-tight text-zinc-950">
+          {formatFocusSeconds(remainingSeconds)}
+        </p>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={toggleFocusSession}
+            className="h-10 min-w-24 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800"
+          >
+            {isRunning ? "Pause" : "Start"}
+          </button>
+          <button
+            type="button"
+            onClick={resetFocusSession}
+            className="h-10 rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-950"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ResourceFavicon({ reference }: { reference: string }) {
   const faviconUrl = getFaviconUrl(reference);
 
@@ -1342,6 +2134,26 @@ function ResourceFavicon({ reference }: { reference: string }) {
       aria-hidden="true"
       className="mt-0.5 h-5 w-5 shrink-0 rounded border border-zinc-200 bg-white bg-contain bg-center bg-no-repeat"
       style={{ backgroundImage: `url("${faviconUrl}")` }}
+    />
+  );
+}
+
+function ResourceOpenIcon({ reference }: { reference: string }) {
+  const faviconUrl = getFaviconUrl(reference);
+  const [failedFaviconUrl, setFailedFaviconUrl] = useState<string | null>(null);
+
+  if (!faviconUrl || failedFaviconUrl === faviconUrl) {
+    return <ExternalLinkIcon />;
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={faviconUrl}
+      alt=""
+      aria-hidden="true"
+      className="h-4 w-4 rounded-sm object-contain"
+      onError={() => setFailedFaviconUrl(faviconUrl)}
     />
   );
 }
@@ -1376,6 +2188,26 @@ function summarizeResources(topic: LearningTopic) {
   );
 }
 
+function getPrimaryResourceUrl(topic: LearningTopic) {
+  const resourceWithUrl = topic.resources.find((resource) =>
+    normalizeResourceUrl(resource.reference),
+  );
+
+  return resourceWithUrl
+    ? normalizeResourceUrl(resourceWithUrl.reference)
+    : null;
+}
+
+function getTopicProjectLabel(topic: LearningTopic) {
+  const projectName = topic.tags[0] || topic.title;
+
+  if (projectName === topic.title) {
+    return "Eigenes Projekt";
+  }
+
+  return `Projekt: ${projectName}`;
+}
+
 function normalizeResourceUrl(reference: string) {
   const trimmedReference = reference.trim();
 
@@ -1392,6 +2224,41 @@ function normalizeResourceUrl(reference: string) {
   }
 
   return `https://${trimmedReference}`;
+}
+
+function getResourceTitleFromReference(reference: string) {
+  const url = normalizeResourceUrl(reference);
+
+  if (!url) {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    const lastPathSegment = parsedUrl.pathname
+      .split("/")
+      .filter(Boolean)
+      .at(-1);
+    const readableSegment = lastPathSegment
+      ? decodeURIComponent(lastPathSegment)
+          .replace(/\.[a-z0-9]+$/i, "")
+          .replace(/[-_]+/g, " ")
+          .trim()
+      : "";
+    const host = parsedUrl.hostname.replace(/^www\./, "");
+
+    if (readableSegment) {
+      return `${toTitleCase(readableSegment)} - ${host}`;
+    }
+
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+function toTitleCase(value: string) {
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function getFaviconUrl(reference: string) {
@@ -1419,6 +2286,36 @@ function formatBytes(bytes: number) {
   }
 
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatFocusSeconds(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(
+    2,
+    "0",
+  )}`;
+}
+
+function validateResourceFile(file: File) {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+
+  if (BLOCKED_RESOURCE_FILE_EXTENSIONS.has(extension)) {
+    return "Dieser Dateityp ist aus Sicherheitsgruenden nicht erlaubt.";
+  }
+
+  if (file.size > MAX_RESOURCE_FILE_SIZE) {
+    return `Die Datei ist zu gross. Erlaubt sind maximal ${formatBytes(
+      MAX_RESOURCE_FILE_SIZE,
+    )}.`;
+  }
+
+  if (file.type && !ALLOWED_RESOURCE_FILE_TYPES.has(file.type)) {
+    return "Dieser Dateityp ist nicht für Ressourcen freigegeben.";
+  }
+
+  return null;
 }
 
 export function buildResource(
@@ -1479,6 +2376,82 @@ function getCalendarColor(state: string, isSelected: boolean) {
   return `bg-sky-100 text-sky-800 hover:bg-sky-200${selectedClass}`;
 }
 
+function getCalendarEventClass(state: string, isSelected: boolean) {
+  const selectedClass = isSelected ? " ring-2 ring-zinc-950/80" : "";
+
+  if (state === "overdue") {
+    return `border-rose-200 bg-rose-50 text-rose-900 hover:border-rose-300 hover:bg-rose-100${selectedClass}`;
+  }
+
+  if (state === "today") {
+    return `border-emerald-200 bg-emerald-50 text-emerald-950 hover:border-emerald-300 hover:bg-emerald-100${selectedClass}`;
+  }
+
+  if (state === "completed") {
+    return `border-zinc-200 bg-zinc-100 text-zinc-600 hover:border-zinc-300 hover:bg-zinc-200/70${selectedClass}`;
+  }
+
+  return `border-sky-200 bg-sky-50 text-sky-950 hover:border-sky-300 hover:bg-sky-100${selectedClass}`;
+}
+
+function CalendarLegend({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "emerald" | "red" | "sky" | "zinc";
+}) {
+  const colorClass =
+    tone === "emerald"
+      ? "bg-emerald-500"
+      : tone === "red"
+        ? "bg-rose-500"
+        : tone === "sky"
+          ? "bg-sky-500"
+          : "bg-zinc-400";
+
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs font-medium text-zinc-600 shadow-xs">
+      <span className={`h-1.5 w-1.5 rounded-full ${colorClass}`} />
+      {label}
+    </span>
+  );
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
 function getReviewEventState(date: string, isCompleted: boolean) {
   if (isCompleted) {
     return "completed";
@@ -1519,10 +2492,256 @@ function stateLabel(state: string) {
   return "kommend";
 }
 
+function ExternalLinkIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </svg>
+  );
+}
+
 function formatDisplayDate(date: string) {
   return new Date(`${date}T00:00:00`).toLocaleDateString("de-DE", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
   });
+}
+
+type GermanDateInputProps = {
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+};
+
+function GermanDateInput({
+  value,
+  onChange,
+  required = false,
+}: GermanDateInputProps) {
+  const [displayValue, setDisplayValue] = useState(
+    value ? formatDisplayDate(value) : "",
+  );
+
+  function updateDate(nextDisplayValue: string) {
+    setDisplayValue(nextDisplayValue);
+
+    if (!nextDisplayValue.trim()) {
+      onChange("");
+      return;
+    }
+
+    const parsedDate = parseGermanDate(nextDisplayValue);
+
+    if (parsedDate) {
+      onChange(parsedDate);
+    }
+  }
+
+  function normalizeDate() {
+    if (!displayValue.trim()) {
+      return;
+    }
+
+    const parsedDate = parseGermanDate(displayValue);
+
+    if (parsedDate) {
+      setDisplayValue(formatDisplayDate(parsedDate));
+      return;
+    }
+
+    setDisplayValue(value ? formatDisplayDate(value) : "");
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      placeholder="TT.MM.JJJJ"
+      value={displayValue}
+      onChange={(event) => updateDate(event.target.value)}
+      onBlur={normalizeDate}
+      required={required}
+      pattern="\d{2}\.\d{2}\.\d{4}"
+      className="mt-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none transition focus:border-zinc-950"
+    />
+  );
+}
+
+function parseGermanDate(value: string) {
+  const match = value.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return toDateInputValue(date);
+}
+
+function applyTopicPlanFromDeadline(draft: LearningTopicDraft) {
+  if (!draft.deadline || draft.deadline < draft.startDate) {
+    return applyTopicPlanFromRepetitionCount({
+      ...draft,
+      reviewRepetitionCount: "1",
+    });
+  }
+
+  const repetitionCount = getRepetitionCountBeforeDeadline(
+    draft.startDate,
+    draft.deadline,
+    draft.reviewInterval,
+  );
+
+  if (repetitionCount < 1) {
+    return applyTopicPlanFromRepetitionCount({
+      ...draft,
+      reviewRepetitionCount: "1",
+    });
+  }
+
+  return {
+    ...draft,
+    reviewRepetitionCount: String(repetitionCount),
+  };
+}
+
+function applyTopicPlanFromRepetitionCount(draft: LearningTopicDraft) {
+  const repetitionCount = getClampedRepetitionCountInput(
+    draft.reviewRepetitionCount,
+  );
+
+  if (!repetitionCount) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    reviewRepetitionCount: String(repetitionCount),
+    deadline: getDeadlineForRepetitionCount(
+      draft.startDate,
+      repetitionCount,
+      draft.reviewInterval,
+    ),
+  };
+}
+
+function normalizeTopicPlan(draft: LearningTopicDraft) {
+  const repetitionCount = getClampedRepetitionCountInput(
+    draft.reviewRepetitionCount,
+  );
+  const projectName = draft.tags.trim() || draft.title.trim();
+
+  return applyTopicPlanFromRepetitionCount({
+    ...draft,
+    tags: projectName,
+    goal: "Projekt",
+    reviewRepetitionCount: String(repetitionCount ?? 1),
+  });
+}
+
+function getRepetitionCountBeforeDeadline(
+  startDate: string,
+  deadline: string,
+  reviewInterval: ReviewInterval,
+) {
+  let repetitions = 0;
+
+  for (const reviewDate of getReviewDates(startDate, 36, reviewInterval)) {
+    if (reviewDate > deadline) {
+      break;
+    }
+
+    repetitions += 1;
+  }
+
+  return repetitions;
+}
+
+function getDeadlineForRepetitionCount(
+  startDate: string,
+  repetitionCount: number,
+  reviewInterval: ReviewInterval,
+) {
+  const reviewDates = getReviewDates(startDate, repetitionCount, reviewInterval);
+
+  return reviewDates[reviewDates.length - 1] ?? startDate;
+}
+
+function getReviewDates(
+  startDate: string,
+  repetitionCount: number,
+  reviewInterval: ReviewInterval,
+) {
+  const reviewDates: string[] = [];
+  let reviewDate = addDateDays(startDate, getFirstReviewIntervalDays(reviewInterval));
+  let intervalIndex = 0;
+
+  while (reviewDates.length < repetitionCount) {
+    reviewDates.push(reviewDate);
+
+    const nextIntervalIndex =
+      reviewInterval === "spaced"
+        ? Math.min(REVIEW_INTERVAL_DAYS.length - 1, intervalIndex + 1)
+        : intervalIndex;
+    const daysToNextReview =
+      reviewInterval === "spaced"
+        ? nextIntervalIndex === intervalIndex
+          ? REVIEW_INTERVAL_DAYS[nextIntervalIndex]
+          : REVIEW_INTERVAL_DAYS[nextIntervalIndex] -
+            REVIEW_INTERVAL_DAYS[intervalIndex]
+        : getFirstReviewIntervalDays(reviewInterval);
+
+    reviewDate = addDateDays(reviewDate, daysToNextReview);
+    intervalIndex = nextIntervalIndex;
+  }
+
+  return reviewDates;
+}
+
+function getClampedRepetitionCountInput(value: string) {
+  const repetitionCount = Number(value);
+
+  if (!Number.isFinite(repetitionCount) || repetitionCount < 1) {
+    return null;
+  }
+
+  return Math.min(36, Math.round(repetitionCount));
+}
+
+function getFirstReviewIntervalDays(reviewInterval: ReviewInterval) {
+  if (reviewInterval === "weekly") {
+    return 7;
+  }
+
+  return 1;
+}
+
+function addDateDays(date: string, days: number) {
+  const nextDate = new Date(`${date}T00:00:00`);
+  nextDate.setDate(nextDate.getDate() + days);
+  return toDateInputValue(nextDate);
 }
